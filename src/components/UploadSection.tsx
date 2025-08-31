@@ -44,39 +44,39 @@ const UploadSection = () => {
   };
 
   return (
-    <section id="upload" className="py-20 bg-secondary/30">
+    <section id="upload" className="py-24 bg-secondary/20">
       <div className="container mx-auto px-6">
-        <div className="text-center mb-12">
-          <h2 className="text-4xl font-bold mb-4">Upload Your Notes</h2>
-          <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
+        <div className="text-center mb-16">
+          <h2 className="text-3xl font-semibold mb-6">Upload Your Notes</h2>
+          <p className="text-lg text-muted-foreground max-w-2xl mx-auto leading-relaxed">
             Support for handwritten notes, PDFs, images, and documents. Our AI processes everything with precision.
           </p>
         </div>
 
         <div className="max-w-4xl mx-auto">
           <Card 
-            className={`p-8 border-2 border-dashed transition-all duration-300 ${
+            className={`p-12 border-2 border-dashed transition-all duration-300 ${
               isDragOver 
-                ? 'border-primary bg-primary/5 shadow-glow' 
-                : 'border-border hover:border-primary/50'
+                ? 'border-primary bg-primary/3 shadow-glow' 
+                : 'border-border hover:border-primary/30'
             }`}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
-            <div className="text-center space-y-6">
+            <div className="text-center space-y-8">
               {uploadedFiles.length > 0 ? (
-                <div className="space-y-6">
-                  <CheckCircle className="w-16 h-16 text-accent mx-auto" />
+                <div className="space-y-8">
+                  <CheckCircle className="w-14 h-14 text-accent mx-auto" />
                   <div>
-                    <h3 className="text-2xl font-semibold text-accent mb-2">Files Uploaded Successfully!</h3>
+                    <h3 className="text-xl font-medium text-accent mb-3">Files Uploaded Successfully!</h3>
                     <p className="text-muted-foreground">Your notes have been processed and are ready for learning.</p>
                   </div>
                   
-                  <div className="space-y-3">
+                  <div className="space-y-4">
                     {uploadedFiles.map((file, index) => (
-                      <div key={index} className="flex items-center justify-between p-3 bg-accent-soft rounded-lg">
-                        <div className="flex items-center gap-3">
+                      <div key={index} className="flex items-center justify-between p-4 bg-accent-soft rounded-xl">
+                        <div className="flex items-center gap-4">
                           <FileText className="w-5 h-5 text-accent" />
                           <span className="font-medium">{file}</span>
                         </div>
@@ -85,10 +85,10 @@ const UploadSection = () => {
                     ))}
                   </div>
 
-                  <div className="flex gap-4 justify-center">
+                  <div className="flex gap-6 justify-center">
                     <Button variant="learning" size="lg">
                       Start SmartLearn
-                      <ArrowRight className="w-5 h-5" />
+                      <ArrowRight className="w-4 h-4" />
                     </Button>
                     <Button variant="outline" size="lg">
                       Ask Questions
@@ -96,47 +96,47 @@ const UploadSection = () => {
                   </div>
                 </div>
               ) : isProcessing ? (
-                <div className="space-y-6">
-                  <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto animate-glow">
-                    <Upload className="w-8 h-8 text-primary" />
+                <div className="space-y-8">
+                  <div className="w-14 h-14 bg-primary/8 rounded-full flex items-center justify-center mx-auto animate-glow">
+                    <Upload className="w-7 h-7 text-primary" />
                   </div>
                   <div>
-                    <h3 className="text-xl font-semibold mb-2">Processing Your Notes...</h3>
-                    <p className="text-muted-foreground mb-4">AI is analyzing and structuring your content</p>
+                    <h3 className="text-lg font-medium mb-3">Processing Your Notes...</h3>
+                    <p className="text-muted-foreground mb-6">AI is analyzing and structuring your content</p>
                     <Progress value={uploadProgress} className="w-full max-w-sm mx-auto" />
-                    <p className="text-sm text-muted-foreground mt-2">{uploadProgress}% complete</p>
+                    <p className="text-sm text-muted-foreground mt-3">{uploadProgress}% complete</p>
                   </div>
                 </div>
               ) : (
-                <div className="space-y-6">
-                  <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto">
-                    <Upload className="w-8 h-8 text-primary" />
+                <div className="space-y-8">
+                  <div className="w-14 h-14 bg-primary/8 rounded-full flex items-center justify-center mx-auto">
+                    <Upload className="w-7 h-7 text-primary" />
                   </div>
                   <div>
-                    <h3 className="text-xl font-semibold mb-2">Drop your files here</h3>
+                    <h3 className="text-lg font-medium mb-3">Drop your files here</h3>
                     <p className="text-muted-foreground">or click to browse</p>
                   </div>
                   
                   <Button variant="learning" size="lg" onClick={simulateUpload}>
-                    <Upload className="w-5 h-5" />
+                    <Upload className="w-4 h-4" />
                     Choose Files
                   </Button>
                   
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-lg mx-auto">
-                    <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
-                      <FileText className="w-5 h-5 text-primary" />
+                    <div className="flex items-center gap-3 p-4 bg-muted rounded-xl">
+                      <FileText className="w-4 h-4 text-primary" />
                       <span className="text-sm">PDF</span>
                     </div>
-                    <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
-                      <Image className="w-5 h-5 text-primary" />
+                    <div className="flex items-center gap-3 p-4 bg-muted rounded-xl">
+                      <Image className="w-4 h-4 text-primary" />
                       <span className="text-sm">JPG</span>
                     </div>
-                    <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
-                      <FileText className="w-5 h-5 text-primary" />
+                    <div className="flex items-center gap-3 p-4 bg-muted rounded-xl">
+                      <FileText className="w-4 h-4 text-primary" />
                       <span className="text-sm">DOCX</span>
                     </div>
-                    <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
-                      <Image className="w-5 h-5 text-primary" />
+                    <div className="flex items-center gap-3 p-4 bg-muted rounded-xl">
+                      <Image className="w-4 h-4 text-primary" />
                       <span className="text-sm">PNG</span>
                     </div>
                   </div>

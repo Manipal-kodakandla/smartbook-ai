@@ -55,30 +55,30 @@ const SmartLearnDemo = () => {
   const progress = ((currentTopic + 1) / (topics.length + 1)) * 100;
 
   return (
-    <section id="smartlearn" className="py-20">
+    <section id="smartlearn" className="py-24">
       <div className="container mx-auto px-6">
-        <div className="text-center mb-12">
-          <h2 className="text-4xl font-bold mb-4">SmartLearn in Action</h2>
-          <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
+        <div className="text-center mb-16">
+          <h2 className="text-3xl font-semibold mb-6">SmartLearn in Action</h2>
+          <p className="text-lg text-muted-foreground max-w-2xl mx-auto leading-relaxed">
             See how AI breaks down your notes into digestible topics with adaptive explanations and quizzes.
           </p>
         </div>
 
         <div className="max-w-4xl mx-auto">
-          <Card className="p-8 bg-gradient-card shadow-learning">
+          <Card className="p-10 bg-gradient-card shadow-learning">
             {/* Progress Header */}
-            <div className="mb-8">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-                    <Brain className="w-5 h-5 text-primary" />
+            <div className="mb-10">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 bg-primary/8 rounded-xl flex items-center justify-center">
+                    <Brain className="w-6 h-6 text-primary" />
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold">Biology Chapter 3: Photosynthesis</h3>
+                    <h3 className="text-lg font-medium">Biology Chapter 3: Photosynthesis</h3>
                     <p className="text-sm text-muted-foreground">Topic {currentTopic + 1} of {topics.length + 1}</p>
                   </div>
                 </div>
-                <Badge variant="secondary" className="bg-accent-soft text-accent">
+                <Badge variant="secondary" className="bg-accent-soft text-accent px-4 py-2">
                   SmartLearn Mode
                 </Badge>
               </div>
@@ -87,31 +87,31 @@ const SmartLearnDemo = () => {
 
             {!showQuiz ? (
               /* Topic Content */
-              <div className="space-y-6">
+              <div className="space-y-8">
                 <div>
-                  <h4 className="text-2xl font-bold mb-4 text-primary">{topics[currentTopic].title}</h4>
-                  <p className="text-lg leading-relaxed mb-6">{topics[currentTopic].content}</p>
+                  <h4 className="text-xl font-medium mb-6 text-primary">{topics[currentTopic].title}</h4>
+                  <p className="text-base leading-relaxed mb-8">{topics[currentTopic].content}</p>
                 </div>
 
                 {/* Real-world Example */}
-                <Card className="p-6 bg-accent-soft border-accent/20">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 bg-accent/20 rounded-lg flex items-center justify-center flex-shrink-0 mt-1">
-                      <BookOpen className="w-4 h-4 text-accent" />
+                <Card className="p-6 bg-accent-soft border-accent/15">
+                  <div className="flex items-start gap-4">
+                    <div className="w-10 h-10 bg-accent/15 rounded-xl flex items-center justify-center flex-shrink-0 mt-1">
+                      <BookOpen className="w-5 h-5 text-accent" />
                     </div>
                     <div>
-                      <h5 className="font-semibold text-accent mb-2">Real-world Example</h5>
-                      <p className="text-accent-foreground">{topics[currentTopic].example}</p>
+                      <h5 className="font-medium text-accent mb-3">Real-world Example</h5>
+                      <p className="text-accent-foreground leading-relaxed">{topics[currentTopic].example}</p>
                     </div>
                   </div>
                 </Card>
 
                 {/* Keywords */}
                 <div>
-                  <h5 className="font-semibold mb-3">Key Terms</h5>
-                  <div className="flex flex-wrap gap-2">
+                  <h5 className="font-medium mb-4">Key Terms</h5>
+                  <div className="flex flex-wrap gap-3">
                     {topics[currentTopic].keywords.map((keyword, index) => (
-                      <Badge key={index} variant="outline" className="border-primary/30 text-primary">
+                      <Badge key={index} variant="outline" className="border-primary/25 text-primary px-3 py-1">
                         {keyword}
                       </Badge>
                     ))}
@@ -119,7 +119,7 @@ const SmartLearnDemo = () => {
                 </div>
 
                 {/* Navigation */}
-                <div className="flex items-center justify-between pt-6">
+                <div className="flex items-center justify-between pt-8">
                   <Button variant="ghost" className="gap-2">
                     <RotateCcw className="w-4 h-4" />
                     Review Previous

@@ -20,23 +20,23 @@ All colors MUST be HSL.
     --popover: 0 0% 100%;
     --popover-foreground: 215 25% 15%;
 
-    /* Primary - Learning Blue */
-    --primary: 220 85% 25%;
+    /* Primary - Soft Learning Blue */
+    --primary: 220 50% 45%;
     --primary-foreground: 0 0% 100%;
-    --primary-glow: 220 85% 35%;
+    --primary-glow: 220 60% 55%;
 
-    /* Secondary - Soft Learning */
-    --secondary: 215 20% 96%;
-    --secondary-foreground: 215 25% 25%;
+    /* Secondary - Softer Learning */
+    --secondary: 215 15% 97%;
+    --secondary-foreground: 215 20% 35%;
 
     /* Muted tones */
-    --muted: 215 20% 96%;
-    --muted-foreground: 215 15% 55%;
+    --muted: 215 15% 97%;
+    --muted-foreground: 215 10% 60%;
 
-    /* Accent - Success Green */
-    --accent: 142 85% 45%;
+    /* Accent - Soft Success Green */
+    --accent: 142 45% 55%;
     --accent-foreground: 0 0% 100%;
-    --accent-soft: 142 45% 92%;
+    --accent-soft: 142 25% 95%;
 
     /* Destructive */
     --destructive: 0 84% 60%;
@@ -48,20 +48,20 @@ All colors MUST be HSL.
     --ring: 220 85% 25%;
 
     /* Learning-specific colors */
-    --learning-purple: 260 85% 35%;
-    --learning-orange: 25 95% 55%;
-    --progress-bg: 142 25% 92%;
+    --learning-purple: 260 40% 65%;
+    --learning-orange: 25 70% 65%;
+    --progress-bg: 142 20% 95%;
 
-    /* Gradients */
-    --gradient-learning: linear-gradient(135deg, hsl(220 85% 25%), hsl(260 85% 35%));
-    --gradient-success: linear-gradient(135deg, hsl(142 85% 45%), hsl(142 85% 55%));
-    --gradient-hero: linear-gradient(135deg, hsl(220 85% 25%) 0%, hsl(260 85% 35%) 50%, hsl(220 85% 25%) 100%);
-    --gradient-card: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(215 20% 98%) 100%);
+    /* Gradients - Softer */
+    --gradient-learning: linear-gradient(135deg, hsl(220 50% 45%), hsl(260 40% 65%));
+    --gradient-success: linear-gradient(135deg, hsl(142 45% 55%), hsl(142 50% 65%));
+    --gradient-hero: linear-gradient(135deg, hsl(220 50% 45%) 0%, hsl(260 40% 65%) 50%, hsl(220 50% 45%) 100%);
+    --gradient-card: linear-gradient(145deg, hsl(0 0% 100%) 0%, hsl(215 10% 99%) 100%);
 
-    /* Shadows */
-    --shadow-learning: 0 10px 40px -10px hsl(220 85% 25% / 0.25);
-    --shadow-card: 0 4px 20px -4px hsl(215 25% 15% / 0.08);
-    --shadow-glow: 0 0 30px hsl(220 85% 35% / 0.3);
+    /* Shadows - Softer */
+    --shadow-learning: 0 8px 25px -8px hsl(220 50% 45% / 0.15);
+    --shadow-card: 0 2px 12px -2px hsl(215 20% 15% / 0.05);
+    --shadow-glow: 0 0 20px hsl(220 60% 55% / 0.2);
 
     /* Transitions */
     --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);

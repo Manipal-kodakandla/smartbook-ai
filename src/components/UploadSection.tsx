@@ -35,14 +35,20 @@ const UploadSection = ({ onDocumentUploaded }: { onDocumentUploaded?: (document:
   };
 
   const handleFileUpload = async (file: File) => {
-    if (!user) {
+    let currentUser = user;
+    
+    if (!currentUser) {
       // Sign in anonymously for demo purposes
       try {
-        await signInAnonymously();
+        const authResult = await signInAnonymously();
+        currentUser = authResult.user;
+        if (!currentUser) {
+          throw new Error("Authentication failed");
+        }
       } catch (error) {
         toast({
           title: "Error",
-          description: "Failed to authenticate. Please try again.",
+          description: "Failed to authenticate. Please enable anonymous sign-ins in Supabase Authentication settings.",
           variant: "destructive",
         });
         return;
@@ -75,7 +81,7 @@ const UploadSection = ({ onDocumentUploaded }: { onDocumentUploaded?: (document:
         });
       }, 300);
 
-      const document = await documentService.uploadDocument(file, user!.id);
+      const document = await documentService.uploadDocument(file, currentUser.id);
       
       clearInterval(progressInterval);
       setUploadProgress(100);

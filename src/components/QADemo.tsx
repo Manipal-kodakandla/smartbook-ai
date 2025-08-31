@@ -3,18 +3,21 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Send, MessageCircle, FileText, Search } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useAuth } from "@/hooks/useAuth";
+import { documentService, type Document } from "@/services/documentService";
 
-const QADemo = () => {
+const QADemo = ({ userDocuments }: { userDocuments?: Document[] }) => {
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([
     {
       type: "ai",
-      content: "Hi! I'm ready to answer questions based on your uploaded notes. Try asking me something about photosynthesis!",
+      content: "Hi! I'm ready to answer questions based on your uploaded notes.",
       sources: []
     }
   ]);
   const [isTyping, setIsTyping] = useState(false);
+  const { user } = useAuth();
 
   const sampleQuestions = [
     "What is the main purpose of photosynthesis?",
@@ -23,44 +26,32 @@ const QADemo = () => {
     "How is photosynthesis like a solar panel?"
   ];
 
-  const handleQuestionSubmit = (questionText?: string) => {
+  const handleQuestionSubmit = async (questionText?: string) => {
     const q = questionText || question;
-    if (!q.trim()) return;
+    if (!q.trim() || !user) return;
 
     // Add user message
     setMessages(prev => [...prev, { type: "user", content: q, sources: [] }]);
     setQuestion("");
     setIsTyping(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      const responses = {
-        "What is the main purpose of photosynthesis?": {
-          content: "The main purpose of photosynthesis is to convert light energy into chemical energy (glucose) that plants can use for growth and survival. This process also produces oxygen as a byproduct, which is essential for most life on Earth.",
-          sources: ["Biology Chapter 3: Photosynthesis - Page 1", "Notes on Plant Energy Systems"]
-        },
-        "Where do light-dependent reactions occur?": {
-          content: "Light-dependent reactions occur in the thylakoids, which are membrane-bound structures inside the chloroplasts. These reactions require direct sunlight and are responsible for producing ATP and NADPH.",
-          sources: ["Biology Chapter 3: Photosynthesis - Page 2"]
-        },
-        "What are the products of photosynthesis?": {
-          content: "The main products of photosynthesis are glucose (C₆H₁₂O₆) and oxygen (O₂). Additionally, the process produces ATP and NADPH during the light-dependent reactions, which are used in the Calvin cycle.",
-          sources: ["Biology Chapter 3: Photosynthesis - Page 1", "Chemistry Notes - Molecular Formulas"]
-        },
-        "How is photosynthesis like a solar panel?": {
-          content: "Photosynthesis is like a solar panel because both convert light energy into usable energy. Solar panels convert sunlight into electricity, while plants convert sunlight into chemical energy (glucose). Both processes capture and transform light energy for practical use.",
-          sources: ["Biology Chapter 3: Photosynthesis - Page 1"]
-        }
-      };
-
-      const response = responses[q as keyof typeof responses] || {
-        content: "I can answer questions based on your uploaded notes about photosynthesis. Please try one of the suggested questions or ask something more specific about the content you've uploaded.",
-        sources: []
-      };
-
-      setMessages(prev => [...prev, { type: "ai", content: response.content, sources: response.sources }]);
+    try {
+      const response = await documentService.askQuestion(q, user.id);
+      setMessages(prev => [...prev, { 
+        type: "ai", 
+        content: response.answer, 
+        sources: response.sources 
+      }]);
+    } catch (error) {
+      console.error('Failed to get answer:', error);
+      setMessages(prev => [...prev, { 
+        type: "ai", 
+        content: "I'm sorry, I encountered an error while processing your question. Please try again.", 
+        sources: [] 
+      }]);
+    } finally {
       setIsTyping(false);
-    }, 1500);
+    }
   };
 
   return (
@@ -87,7 +78,7 @@ const QADemo = () => {
                   <p className="text-sm text-muted-foreground">Ask anything about your notes</p>
                 </div>
                 <Badge variant="secondary" className="ml-auto bg-accent-soft text-accent">
-                  2 Documents Loaded
+                  {userDocuments?.length || 0} Documents Loaded
                 </Badge>
               </div>
 
@@ -182,20 +173,21 @@ const QADemo = () => {
                 Loaded Documents
               </h4>
               <div className="space-y-3">
-                <div className="flex items-center gap-3 p-3 bg-accent-soft rounded-lg">
-                  <FileText className="w-4 h-4 text-accent" />
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">Biology Chapter 3</p>
-                    <p className="text-xs text-muted-foreground">5 pages • Photosynthesis</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 p-3 bg-accent-soft rounded-lg">
-                  <FileText className="w-4 h-4 text-accent" />
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">Chemistry Notes</p>
-                    <p className="text-xs text-muted-foreground">3 pages • Molecular Formulas</p>
-                  </div>
-                </div>
+                {userDocuments && userDocuments.length > 0 ? (
+                  userDocuments.map((doc, index) => (
+                    <div key={index} className="flex items-center gap-3 p-3 bg-accent-soft rounded-lg">
+                      <FileText className="w-4 h-4 text-accent" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">{doc.title}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {doc.file_type} • {doc.processing_status}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground">No documents uploaded yet</p>
+                )}
               </div>
             </Card>
 

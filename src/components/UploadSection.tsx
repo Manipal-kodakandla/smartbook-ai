@@ -2,13 +2,18 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Upload, FileText, Image, CheckCircle, ArrowRight } from "lucide-react";
-import { useState } from "react";
+import { useState, useRef } from "react";
+import { useAuth } from "@/hooks/useAuth";
+import { documentService, type Document } from "@/services/documentService";
+import { toast } from "@/hooks/use-toast";
 
-const UploadSection = () => {
+const UploadSection = ({ onDocumentUploaded }: { onDocumentUploaded?: (document: Document) => void }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<Document[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { user, signInAnonymously } = useAuth();
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -23,24 +28,90 @@ const UploadSection = () => {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    simulateUpload();
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      handleFileUpload(files[0]);
+    }
   };
 
-  const simulateUpload = () => {
+  const handleFileUpload = async (file: File) => {
+    if (!user) {
+      // Sign in anonymously for demo purposes
+      try {
+        await signInAnonymously();
+      } catch (error) {
+        toast({
+          title: "Error",
+          description: "Failed to authenticate. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    // Validate file type
+    const allowedTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'image/jpeg', 'image/png', 'text/plain'];
+    if (!allowedTypes.includes(file.type)) {
+      toast({
+        title: "Unsupported file type",
+        description: "Please upload PDF, DOCX, JPG, PNG, or TXT files.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsProcessing(true);
     setUploadProgress(0);
-    
-    const interval = setInterval(() => {
-      setUploadProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setIsProcessing(false);
-          setUploadedFiles(["Mathematics_Notes.pdf", "Physics_Chapter3.jpg"]);
-          return 100;
-        }
-        return prev + 10;
+
+    try {
+      // Simulate progress
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          if (prev >= 90) {
+            clearInterval(progressInterval);
+            return 90;
+          }
+          return prev + 15;
+        });
+      }, 300);
+
+      const document = await documentService.uploadDocument(file, user!.id);
+      
+      clearInterval(progressInterval);
+      setUploadProgress(100);
+      
+      setTimeout(() => {
+        setUploadedFiles(prev => [...prev, document]);
+        setIsProcessing(false);
+        setUploadProgress(0);
+        onDocumentUploaded?.(document);
+        
+        toast({
+          title: "Upload successful!",
+          description: "Your document has been processed and is ready for learning.",
+        });
+      }, 500);
+
+    } catch (error) {
+      setIsProcessing(false);
+      setUploadProgress(0);
+      toast({
+        title: "Upload failed",
+        description: error instanceof Error ? error.message : "Failed to upload document",
+        variant: "destructive",
       });
-    }, 200);
+    }
+  };
+
+  const handleFileSelect = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleFileUpload(file);
+    }
   };
 
   return (
@@ -78,7 +149,10 @@ const UploadSection = () => {
                       <div key={index} className="flex items-center justify-between p-4 bg-accent-soft rounded-xl">
                         <div className="flex items-center gap-4">
                           <FileText className="w-5 h-5 text-accent" />
-                          <span className="font-medium">{file}</span>
+                          <div>
+                            <span className="font-medium">{file.title}</span>
+                            <p className="text-sm text-muted-foreground">{file.file_name}</p>
+                          </div>
                         </div>
                         <CheckCircle className="w-5 h-5 text-accent" />
                       </div>
@@ -117,10 +191,17 @@ const UploadSection = () => {
                     <p className="text-muted-foreground">or click to browse</p>
                   </div>
                   
-                  <Button variant="learning" size="lg" onClick={simulateUpload}>
+                  <Button variant="learning" size="lg" onClick={handleFileSelect}>
                     <Upload className="w-4 h-4" />
                     Choose Files
                   </Button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    accept=".pdf,.docx,.jpg,.jpeg,.png,.txt"
+                    onChange={handleFileInputChange}
+                  />
                   
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-lg mx-auto">
                     <div className="flex items-center gap-3 p-4 bg-muted rounded-xl">

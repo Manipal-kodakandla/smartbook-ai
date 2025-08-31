@@ -1,1 +1,40 @@
 project_id = "lyactznqztxbcbwaiknm"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["https://127.0.0.1:3000"]
+jwt_expiry = 3600
+password_min_length = 6
+external_email_enabled = true
+external_phone_enabled = true
+sms_provider = "twilio"
+sms_max_frequency = 60
+sms_template = "Your code is {{ .Code }}"
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+secure_password_change = false
+
+[auth.sms]
+enable_signup = true
+enable_confirmations = false
+secure_password_change = false
+
+[functions.upload-document]
+verify_jwt = false
+
+[functions.process-document]
+verify_jwt = false
+
+[functions.chat-qa]
+verify_jwt = false

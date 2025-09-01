@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle, Brain, ArrowRight, RotateCcw, BookOpen } from "lucide-react";
+import { CheckCircle, Brain, ArrowRight, RotateCcw, BookOpen, Trophy } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { documentService, type Document, type Topic, type Quiz } from "@/services/documentService";
@@ -15,6 +15,7 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
   const [topics, setTopics] = useState<Topic[]>([]);
   const [currentQuiz, setCurrentQuiz] = useState<Quiz | null>(null);
   const [loading, setLoading] = useState(false);
+  const [isCompleted, setIsCompleted] = useState(false);
   const { user } = useAuth();
 
   // Load topics when document is selected
@@ -33,6 +34,7 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
       setShowQuiz(false);
       setSelectedAnswer(null);
       setShowResult(false);
+      setIsCompleted(false);
     } catch (error) {
       console.error('Failed to load topics:', error);
     } finally {
@@ -53,15 +55,21 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
     }
   };
 
+  const handleStartQuiz = () => {
+    setShowQuiz(true);
+    loadQuizForCurrentTopic();
+  };
+
   const handleNextTopic = () => {
     if (currentTopic < topics.length - 1) {
       setCurrentTopic(currentTopic + 1);
       setShowQuiz(false);
       setSelectedAnswer(null);
       setShowResult(false);
+      setCurrentQuiz(null);
     } else {
-      setShowQuiz(true);
-      loadQuizForCurrentTopic();
+      // All topics completed
+      setIsCompleted(true);
     }
   };
 
@@ -87,7 +95,7 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
     }, 500);
   };
 
-  const progress = topics.length > 0 ? ((currentTopic + 1) / (topics.length + 1)) * 100 : 0;
+  const progress = topics.length > 0 ? ((currentTopic + 1) / topics.length) * 100 : 0;
 
   return (
     <section id="smartlearn" className="py-24">
@@ -127,7 +135,7 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                       </div>
                       <div>
                         <h3 className="text-lg font-medium">{selectedDocument?.title || 'Learning Content'}</h3>
-                        <p className="text-sm text-muted-foreground">Topic {currentTopic + 1} of {topics.length + 1}</p>
+                        <p className="text-sm text-muted-foreground">Topic {currentTopic + 1} of {topics.length}</p>
                       </div>
                     </div>
                     <Badge variant="secondary" className="bg-accent-soft text-accent px-4 py-2">
@@ -137,7 +145,35 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                   <Progress value={progress} className="w-full" />
                 </div>
 
-                {!showQuiz ? (
+                {isCompleted ? (
+                  /* Completion Screen */
+                  <div className="text-center space-y-8">
+                    <div className="w-20 h-20 bg-accent/15 rounded-2xl flex items-center justify-center mx-auto">
+                      <Trophy className="w-10 h-10 text-accent" />
+                    </div>
+                    <div>
+                      <h4 className="text-2xl font-bold mb-4 text-accent">🎉 Congratulations!</h4>
+                      <p className="text-lg text-muted-foreground mb-8">
+                        You've successfully completed all topics from "{selectedDocument?.title}". 
+                        You're now ready to ace your exam!
+                      </p>
+                    </div>
+                    <div className="flex gap-4 justify-center">
+                      <Button variant="outline" onClick={() => {
+                        setCurrentTopic(0);
+                        setIsCompleted(false);
+                        setShowQuiz(false);
+                        setSelectedAnswer(null);
+                        setShowResult(false);
+                      }}>
+                        Review Topics
+                      </Button>
+                      <Button variant="learning" onClick={() => document.getElementById('qa')?.scrollIntoView({ behavior: 'smooth' })}>
+                        Ask Questions
+                      </Button>
+                    </div>
+                  </div>
+                ) : !showQuiz ? (
                   /* Topic Content */
                   <div className="space-y-8">
                     <div>
@@ -185,10 +221,18 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                         <RotateCcw className="w-4 h-4" />
                         Review Previous
                       </Button>
-                      <Button variant="learning" onClick={handleNextTopic} className="gap-2">
-                        {currentTopic < topics.length - 1 ? "Next Topic" : "Take Quiz"}
-                        <ArrowRight className="w-4 h-4" />
-                      </Button>
+                      <div className="flex gap-3">
+                        <Button variant="outline" onClick={handleStartQuiz} className="gap-2">
+                          Take Quiz
+                          <ArrowRight className="w-4 h-4" />
+                        </Button>
+                        {currentTopic < topics.length - 1 && (
+                          <Button variant="learning" onClick={handleNextTopic} className="gap-2">
+                            Next Topic
+                            <ArrowRight className="w-4 h-4" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -252,8 +296,11 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                           setSelectedAnswer(null);
                           setShowResult(false);
                           setCurrentQuiz(null);
+                          if (currentTopic >= topics.length - 1) {
+                            setIsCompleted(true);
+                          }
                         }}>
-                          Continue Learning
+                          {currentTopic >= topics.length - 1 ? "Complete Learning" : "Continue Learning"}
                           <ArrowRight className="w-5 h-5" />
                         </Button>
                       </div>

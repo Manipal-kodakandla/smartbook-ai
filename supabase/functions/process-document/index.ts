@@ -16,7 +16,20 @@ serve(async (req) => {
   }
 
   try {
-    const { documentId, extractedText } = await req.json();
+    const body = await req.text();
+    let parsedBody;
+    
+    try {
+      parsedBody = JSON.parse(body);
+    } catch (parseError) {
+      console.error('JSON parse error:', parseError, 'Body:', body);
+      return new Response(
+        JSON.stringify({ error: 'Invalid JSON in request body' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
+    const { documentId, extractedText } = parsedBody;
 
     if (!documentId || !extractedText) {
       return new Response(

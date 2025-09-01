@@ -166,11 +166,19 @@ const UploadSection = ({ onDocumentUploaded }: { onDocumentUploaded?: (document:
                   </div>
 
                   <div className="flex gap-6 justify-center">
-                    <Button variant="learning" size="lg">
+                    <Button 
+                      variant="learning" 
+                      size="lg"
+                      onClick={() => document.getElementById('smartlearn')?.scrollIntoView({ behavior: 'smooth' })}
+                    >
                       Start SmartLearn
                       <ArrowRight className="w-4 h-4" />
                     </Button>
-                    <Button variant="outline" size="lg">
+                    <Button 
+                      variant="outline" 
+                      size="lg"
+                      onClick={() => document.getElementById('qa')?.scrollIntoView({ behavior: 'smooth' })}
+                    >
                       Ask Questions
                     </Button>
                   </div>

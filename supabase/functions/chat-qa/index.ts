@@ -69,41 +69,107 @@ serve(async (req) => {
       `Document: ${doc.title}\nContent: ${doc.extracted_text}`
     ).join('\n\n---\n\n');
 
-    // Call OpenAI to answer the question based on the documents
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openAIApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
+    // Try to get answer using AI (OpenAI first, then Ollama fallback)
+    let answer = '';
+    let apiUsed = 'openai';
+    
+    if (openAIApiKey) {
+      try {
+        // Call OpenAI to answer the question based on the documents
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openAIApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
+                If the answer cannot be found in the documents, say so clearly. 
+                Always cite which document(s) you're referencing in your answer.
+                Keep answers concise but comprehensive.`
+              },
+              {
+                role: 'user',
+                content: `Based on these documents:\n\n${contextContent}\n\nQuestion: ${question}`
+              }
+            ],
+            temperature: 0.3,
+            max_tokens: 800
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`OpenAI API error: ${response.status}`);
+        }
+
+        const aiResponse = await response.json();
+        answer = aiResponse.choices[0].message.content;
+      } catch (openaiError) {
+        console.log('OpenAI failed, trying Ollama fallback:', openaiError);
+        apiUsed = 'ollama';
+        
+        // Fallback to Ollama
+        const ollamaResponse = await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'llama3.2',
+            prompt: `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
             If the answer cannot be found in the documents, say so clearly. 
             Always cite which document(s) you're referencing in your answer.
-            Keep answers concise but comprehensive.`
-          },
-          {
-            role: 'user',
-            content: `Based on these documents:\n\n${contextContent}\n\nQuestion: ${question}`
-          }
-        ],
-        temperature: 0.3,
-        max_tokens: 800
-      }),
-    });
+            Keep answers concise but comprehensive.
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('OpenAI API error:', errorData);
-      throw new Error(`OpenAI API error: ${response.status}`);
+            Based on these documents:
+            ${contextContent}
+
+            Question: ${question}`,
+            stream: false,
+          }),
+        });
+
+        if (!ollamaResponse.ok) {
+          throw new Error(`Ollama API error: ${ollamaResponse.status}`);
+        }
+
+        const ollamaData = await ollamaResponse.json();
+        answer = ollamaData.response;
+      }
+    } else {
+      // No OpenAI key, use Ollama directly
+      apiUsed = 'ollama';
+      const ollamaResponse = await fetch('http://localhost:11434/api/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'llama3.2',
+          prompt: `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
+          If the answer cannot be found in the documents, say so clearly. 
+          Always cite which document(s) you're referencing in your answer.
+          Keep answers concise but comprehensive.
+
+          Based on these documents:
+          ${contextContent}
+
+          Question: ${question}`,
+          stream: false,
+        }),
+      });
+
+      if (!ollamaResponse.ok) {
+        throw new Error(`Ollama API error: ${ollamaResponse.status}`);
+      }
+
+      const ollamaData = await ollamaResponse.json();
+      answer = ollamaData.response;
     }
-
-    const aiResponse = await response.json();
-    const answer = aiResponse.choices[0].message.content;
 
     // Determine which documents were likely referenced
     const sources = documents.map(doc => doc.title);
@@ -150,7 +216,8 @@ serve(async (req) => {
       JSON.stringify({ 
         answer,
         sources,
-        sessionId: chatSession?.id
+        sessionId: chatSession?.id,
+        apiUsed
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

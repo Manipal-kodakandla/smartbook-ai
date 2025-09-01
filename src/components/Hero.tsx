@@ -27,12 +27,22 @@ const Hero = () => {
             </div>
 
             <div className="flex flex-col sm:flex-row gap-6">
-              <Button variant="success" size="lg" className="text-base px-10 py-3">
+              <Button 
+                variant="success" 
+                size="lg" 
+                className="text-base px-10 py-3"
+                onClick={() => document.getElementById('upload')?.scrollIntoView({ behavior: 'smooth' })}
+              >
                 <Upload className="w-4 h-4" />
                 Upload Notes
               </Button>
-              <Button variant="outline" size="lg" className="text-base px-10 py-3 bg-white/8 border-white/20 text-primary-foreground hover:bg-white/15">
-                See Demo
+              <Button 
+                variant="outline" 
+                size="lg" 
+                className="text-base px-10 py-3 bg-white/8 border-white/20 text-primary-foreground hover:bg-white/15"
+                onClick={() => document.getElementById('smartlearn')?.scrollIntoView({ behavior: 'smooth' })}
+              >
+                Start SmartLearn
               </Button>
             </div>
 
@@ -96,7 +106,10 @@ const Hero = () => {
             </div>
           </Card>
 
-          <Card className="p-8 bg-gradient-card shadow-card border-0 hover:shadow-learning transition-all duration-300 hover:-translate-y-1">
+          <Card 
+            className="p-8 bg-gradient-card shadow-card border-0 hover:shadow-learning transition-all duration-300 hover:-translate-y-1 cursor-pointer"
+            onClick={() => document.getElementById('smartlearn')?.scrollIntoView({ behavior: 'smooth' })}
+          >
             <div className="space-y-5">
               <div className="w-14 h-14 bg-accent/8 rounded-xl flex items-center justify-center">
                 <BookOpen className="w-7 h-7 text-accent" />
@@ -108,7 +121,10 @@ const Hero = () => {
             </div>
           </Card>
 
-          <Card className="p-8 bg-gradient-card shadow-card border-0 hover:shadow-learning transition-all duration-300 hover:-translate-y-1">
+          <Card 
+            className="p-8 bg-gradient-card shadow-card border-0 hover:shadow-learning transition-all duration-300 hover:-translate-y-1 cursor-pointer"
+            onClick={() => document.getElementById('qa')?.scrollIntoView({ behavior: 'smooth' })}
+          >
             <div className="space-y-5">
               <div className="w-14 h-14 bg-learning-purple/8 rounded-xl flex items-center justify-center">
                 <Brain className="w-7 h-7 text-learning-purple" />

@@ -1,3 +1,4 @@
+
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.56.1';
@@ -38,6 +39,13 @@ serve(async (req) => {
       );
     }
 
+    if (!openAIApiKey) {
+      return new Response(
+        JSON.stringify({ error: 'OpenAI API key not configured' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     console.log('Processing document:', documentId);
 
     // Initialize Supabase client
@@ -46,127 +54,66 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    // Call AI to analyze the text and create topics (OpenAI first, then Ollama fallback)
+    // Call OpenAI to analyze the text and create topics
     let aiContent = '';
     
-    if (openAIApiKey) {
-      try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${openAIApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [
-              {
-                role: 'system',
-                content: `You are an educational AI that breaks down academic content into digestible topics. 
-                Analyze the provided text and create 3-5 main topics with the following structure:
-                
-                For each topic, provide:
-                1. A clear title (max 50 characters)
-                2. Main content explanation (2-3 sentences)
-                3. A simplified explanation suitable for students
-                4. A real-world example or analogy
-                5. 3-5 key terms/keywords
-                
-                Return the result as a JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).`
-              },
-              {
-                role: 'user',
-                content: `Please analyze this text and break it into educational topics:\n\n${extractedText}`
-              }
-            ],
-            temperature: 0.7,
-            max_tokens: 2000
-          }),
-        });
-
-        if (!response.ok) {
-          throw new Error(`OpenAI API error: ${response.status}`);
-        }
-
-        const aiResponse = await response.json();
-        aiContent = aiResponse.choices[0].message.content;
-      } catch (openaiError) {
-        console.log('OpenAI failed, trying Ollama fallback:', openaiError);
-        
-        // Fallback to Ollama
-        const ollamaResponse = await fetch('http://localhost:11434/api/generate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'llama3.2',
-            prompt: `You are an educational AI that breaks down academic content into digestible topics. 
-            Analyze the provided text and create 3-5 main topics with the following structure:
-            
-            For each topic, provide:
-            1. A clear title (max 50 characters)
-            2. Main content explanation (2-3 sentences)
-            3. A simplified explanation suitable for students
-            4. A real-world example or analogy
-            5. 3-5 key terms/keywords
-            
-            Return the result as a JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).
-            
-            Please analyze this text and break it into educational topics:
-            ${extractedText}`,
-            stream: false,
-          }),
-        });
-
-        if (!ollamaResponse.ok) {
-          throw new Error(`Ollama API error: ${ollamaResponse.status}`);
-        }
-
-        const ollamaData = await ollamaResponse.json();
-        aiContent = ollamaData.response;
-      }
-    } else {
-      // No OpenAI key, use Ollama directly
-      const ollamaResponse = await fetch('http://localhost:11434/api/generate', {
+    try {
+      console.log('Calling OpenAI for topic analysis...');
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
+          'Authorization': `Bearer ${openAIApiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'llama3.2',
-          prompt: `You are an educational AI that breaks down academic content into digestible topics. 
-          Analyze the provided text and create 3-5 main topics with the following structure:
-          
-          For each topic, provide:
-          1. A clear title (max 50 characters)
-          2. Main content explanation (2-3 sentences)
-          3. A simplified explanation suitable for students
-          4. A real-world example or analogy
-          5. 3-5 key terms/keywords
-          
-          Return the result as a JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).
-          
-          Please analyze this text and break it into educational topics:
-          ${extractedText}`,
-          stream: false,
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'system',
+              content: `You are an educational AI that breaks down academic content into digestible topics. 
+              Analyze the provided text and create 3-5 main topics with the following structure:
+              
+              For each topic, provide:
+              1. A clear title (max 50 characters)
+              2. Main content explanation (2-3 sentences)
+              3. A simplified explanation suitable for students
+              4. A real-world example or analogy
+              5. 3-5 key terms/keywords
+              
+              Return the result as a JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).`
+            },
+            {
+              role: 'user',
+              content: `Please analyze this text and break it into educational topics:\n\n${extractedText.substring(0, 8000)}`
+            }
+          ],
+          temperature: 0.7,
+          max_tokens: 2000
         }),
       });
 
-      if (!ollamaResponse.ok) {
-        throw new Error(`Ollama API error: ${ollamaResponse.status}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`OpenAI API error: ${response.status} - ${errorText}`);
+        throw new Error(`OpenAI API error: ${response.status}`);
       }
 
-      const ollamaData = await ollamaResponse.json();
-      aiContent = ollamaData.response;
+      const aiResponse = await response.json();
+      aiContent = aiResponse.choices[0].message.content;
+      console.log('OpenAI response received:', aiContent.length, 'characters');
+    } catch (openaiError) {
+      console.error('OpenAI API failed:', openaiError);
+      return new Response(
+        JSON.stringify({ error: 'Failed to process document with AI: ' + openaiError.message }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
-
-    console.log('AI response received:', aiContent.length, 'characters');
 
     // Parse the AI response
     let topics;
     try {
       topics = JSON.parse(aiContent);
+      console.log('Parsed topics:', topics.length);
     } catch (parseError) {
       console.error('Failed to parse AI response:', parseError);
       // Fallback topics if AI response is malformed
@@ -184,11 +131,11 @@ serve(async (req) => {
     // Store topics in database
     const topicsWithDocId = topics.map((topic: any, index: number) => ({
       document_id: documentId,
-      title: topic.title,
-      content: topic.content,
-      simplified_explanation: topic.simplified_explanation,
-      real_world_example: topic.real_world_example,
-      keywords: topic.keywords,
+      title: topic.title || `Topic ${index + 1}`,
+      content: topic.content || 'Content not available',
+      simplified_explanation: topic.simplified_explanation || 'Simplified explanation not available',
+      real_world_example: topic.real_world_example || 'Example not available',
+      keywords: Array.isArray(topic.keywords) ? topic.keywords : ['general'],
       topic_order: index
     }));
 
@@ -206,110 +153,59 @@ serve(async (req) => {
 
     // Generate quizzes for each topic
     for (const topic of storedTopics) {
-      let quizContent = '';
-      
-      if (openAIApiKey) {
-        try {
-          const quizResponse = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${openAIApiKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              model: 'gpt-4o-mini',
-              messages: [
-                {
-                  role: 'system',
-                  content: `Create a multiple-choice quiz question based on the given topic. 
-                  Return a JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).`
-                },
-                {
-                  role: 'user',
-                  content: `Create a quiz question for this topic:\nTitle: ${topic.title}\nContent: ${topic.content}`
-                }
-              ],
-              temperature: 0.7,
-              max_tokens: 500
-            }),
-          });
-
-          if (quizResponse.ok) {
-            const quizData = await quizResponse.json();
-            quizContent = quizData.choices[0].message.content;
-          } else {
-            throw new Error('OpenAI quiz generation failed');
-          }
-        } catch (openaiError) {
-          console.log('OpenAI quiz generation failed, trying Ollama:', openaiError);
-          
-          // Fallback to Ollama for quiz generation
-          const ollamaQuizResponse = await fetch('http://localhost:11434/api/generate', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              model: 'llama3.2',
-              prompt: `Create a multiple-choice quiz question based on the given topic. 
-              Return a JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).
-              
-              Create a quiz question for this topic:
-              Title: ${topic.title}
-              Content: ${topic.content}`,
-              stream: false,
-            }),
-          });
-          
-          if (ollamaQuizResponse.ok) {
-            const ollamaQuizData = await ollamaQuizResponse.json();
-            quizContent = ollamaQuizData.response;
-          }
-        }
-      } else {
-        // No OpenAI key, use Ollama directly
-        const ollamaQuizResponse = await fetch('http://localhost:11434/api/generate', {
+      try {
+        console.log('Generating quiz for topic:', topic.title);
+        const quizResponse = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: {
+            'Authorization': `Bearer ${openAIApiKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'llama3.2',
-            prompt: `Create a multiple-choice quiz question based on the given topic. 
-            Return a JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).
-            
-            Create a quiz question for this topic:
-            Title: ${topic.title}
-            Content: ${topic.content}`,
-            stream: false,
+            model: 'gpt-4o-mini',
+            messages: [
+              {
+                role: 'system',
+                content: `Create a multiple-choice quiz question based on the given topic. 
+                Return a JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).`
+              },
+              {
+                role: 'user',
+                content: `Create a quiz question for this topic:\nTitle: ${topic.title}\nContent: ${topic.content}`
+              }
+            ],
+            temperature: 0.7,
+            max_tokens: 500
           }),
         });
-        
-        if (ollamaQuizResponse.ok) {
-          const ollamaQuizData = await ollamaQuizResponse.json();
-          quizContent = ollamaQuizData.response;
-        }
-      }
 
-      // Parse and store quiz if we got content
-      if (quizContent) {
-        try {
-          const quiz = JSON.parse(quizContent);
+        if (quizResponse.ok) {
+          const quizData = await quizResponse.json();
+          const quizContent = quizData.choices[0].message.content;
           
-          await supabaseClient
-            .from('quizzes')
-            .insert([
-              {
-                topic_id: topic.id,
-                question: quiz.question,
-                options: quiz.options,
-                correct_answer: quiz.correct_answer,
-                explanation: quiz.explanation
-              }
-            ]);
-        } catch (error) {
-          console.error('Failed to create quiz for topic:', topic.id, error);
+          try {
+            const quiz = JSON.parse(quizContent);
+            
+            await supabaseClient
+              .from('quizzes')
+              .insert([
+                {
+                  topic_id: topic.id,
+                  question: quiz.question || 'Question not available',
+                  options: Array.isArray(quiz.options) ? quiz.options : ['Option A', 'Option B', 'Option C', 'Option D'],
+                  correct_answer: typeof quiz.correct_answer === 'number' ? quiz.correct_answer : 0,
+                  explanation: quiz.explanation || 'Explanation not available'
+                }
+              ]);
+            console.log('Quiz created for topic:', topic.title);
+          } catch (error) {
+            console.error('Failed to parse quiz JSON for topic:', topic.id, error);
+          }
+        } else {
+          console.error('Quiz generation failed for topic:', topic.id);
         }
+      } catch (error) {
+        console.error('Failed to create quiz for topic:', topic.id, error);
       }
     }
 
@@ -318,6 +214,8 @@ serve(async (req) => {
       .from('documents')
       .update({ processing_status: 'completed', processed_at: new Date().toISOString() })
       .eq('id', documentId);
+
+    console.log('Document processing completed successfully');
 
     return new Response(
       JSON.stringify({ 

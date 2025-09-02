@@ -43,19 +43,36 @@ export interface UserProgress {
 
 export const documentService = {
   async uploadDocument(file: File, userId: string): Promise<Document> {
+    console.log('Starting document upload for file:', file.name);
+    
     const formData = new FormData();
     formData.append('file', file);
     formData.append('userId', userId);
 
-    const { data, error } = await supabase.functions.invoke('upload-document', {
-      body: formData,
-    });
+    console.log('FormData prepared, calling supabase function...');
 
-    if (error) {
-      throw new Error(error.message || 'Failed to upload document');
+    try {
+      const { data, error } = await supabase.functions.invoke('upload-document', {
+        body: formData,
+      });
+
+      console.log('Supabase function response:', { data, error });
+
+      if (error) {
+        console.error('Supabase function error:', error);
+        throw new Error(error.message || 'Failed to upload document');
+      }
+
+      if (!data || !data.document) {
+        throw new Error('Invalid response from upload function');
+      }
+
+      console.log('Upload successful:', data.document);
+      return data.document;
+    } catch (error) {
+      console.error('Upload error in documentService:', error);
+      throw error;
     }
-
-    return data.document;
   },
 
   async getUserDocuments(userId: string): Promise<Document[]> {

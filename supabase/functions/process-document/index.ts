@@ -8,7 +8,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
+const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
 
 serve(async (req) => {
   // Handle CORS preflight requests
@@ -39,9 +39,9 @@ serve(async (req) => {
       );
     }
 
-    if (!openAIApiKey) {
+    if (!geminiApiKey) {
       return new Response(
-        JSON.stringify({ error: 'OpenAI API key not configured' }),
+        JSON.stringify({ error: 'Gemini API key not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -54,23 +54,12 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    // Call OpenAI to analyze the text and create topics
+    // Call Gemini to analyze the text and create topics
     let aiContent = '';
     
     try {
-      console.log('Calling OpenAI for topic analysis...');
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${openAIApiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [
-            {
-              role: 'system',
-              content: `You are an educational AI that breaks down academic content into digestible topics. 
+      console.log('Calling Gemini for topic analysis...');
+      const prompt = `You are an educational AI that breaks down academic content into digestible topics. 
               Analyze the provided text and create 3-5 main topics with the following structure:
               
               For each topic, provide:
@@ -80,31 +69,39 @@ serve(async (req) => {
               4. A real-world example or analogy
               5. 3-5 key terms/keywords
               
-              Return the result as a JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).`
-            },
-            {
-              role: 'user',
-              content: `Please analyze this text and break it into educational topics:\n\n${extractedText.substring(0, 8000)}`
-            }
-          ],
-          temperature: 0.7,
-          max_tokens: 2000
+              Return the result as a JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).
+
+              Please analyze this text and break it into educational topics:
+
+              ${extractedText.substring(0, 8000)}`;
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }]
         }),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`OpenAI API error: ${response.status} - ${errorText}`);
-        throw new Error(`OpenAI API error: ${response.status}`);
+        console.error(`Gemini API error: ${response.status} - ${errorText}`);
+        throw new Error(`Gemini API error: ${response.status}`);
       }
 
       const aiResponse = await response.json();
-      aiContent = aiResponse.choices[0].message.content;
-      console.log('OpenAI response received:', aiContent.length, 'characters');
-    } catch (openaiError) {
-      console.error('OpenAI API failed:', openaiError);
+      aiContent = aiResponse.candidates[0].content.parts[0].text;
+      console.log('Gemini response received:', aiContent.length, 'characters');
+    } catch (geminiError) {
+      console.error('Gemini API failed:', geminiError);
       return new Response(
-        JSON.stringify({ error: 'Failed to process document with AI: ' + openaiError.message }),
+        JSON.stringify({ error: 'Failed to process document with AI: ' + geminiError.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -155,33 +152,30 @@ serve(async (req) => {
     for (const topic of storedTopics) {
       try {
         console.log('Generating quiz for topic:', topic.title);
-        const quizResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        const quizPrompt = `Create a multiple-choice quiz question based on the given topic. 
+                Return a JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).
+
+                Create a quiz question for this topic:
+                Title: ${topic.title}
+                Content: ${topic.content}`;
+
+        const quizResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${openAIApiKey}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [
-              {
-                role: 'system',
-                content: `Create a multiple-choice quiz question based on the given topic. 
-                Return a JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).`
-              },
-              {
-                role: 'user',
-                content: `Create a quiz question for this topic:\nTitle: ${topic.title}\nContent: ${topic.content}`
-              }
-            ],
-            temperature: 0.7,
-            max_tokens: 500
+            contents: [{
+              parts: [{
+                text: quizPrompt
+              }]
+            }]
           }),
         });
 
         if (quizResponse.ok) {
           const quizData = await quizResponse.json();
-          const quizContent = quizData.choices[0].message.content;
+          const quizContent = quizData.candidates[0].content.parts[0].text;
           
           try {
             const quiz = JSON.parse(quizContent);

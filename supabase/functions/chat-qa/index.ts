@@ -7,7 +7,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const openAIApiKey = Deno.env.get('OPENAI_API_KEY');
+const geminiApiKey = Deno.env.get('GEMINI_API_KEY');
 
 serve(async (req) => {
   // Handle CORS preflight requests
@@ -69,106 +69,57 @@ serve(async (req) => {
       `Document: ${doc.title}\nContent: ${doc.extracted_text}`
     ).join('\n\n---\n\n');
 
-    // Try to get answer using AI (OpenAI first, then Ollama fallback)
+    // Use Gemini API to answer the question
     let answer = '';
-    let apiUsed = 'openai';
+    let apiUsed = 'gemini';
     
-    if (openAIApiKey) {
-      try {
-        // Call OpenAI to answer the question based on the documents
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${openAIApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [
-              {
-                role: 'system',
-                content: `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
-                If the answer cannot be found in the documents, say so clearly. 
-                Always cite which document(s) you're referencing in your answer.
-                Keep answers concise but comprehensive.`
-              },
-              {
-                role: 'user',
-                content: `Based on these documents:\n\n${contextContent}\n\nQuestion: ${question}`
-              }
-            ],
-            temperature: 0.3,
-            max_tokens: 800
-          }),
-        });
+    if (!geminiApiKey) {
+      return new Response(
+        JSON.stringify({ error: 'Gemini API key not configured' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
-        if (!response.ok) {
-          throw new Error(`OpenAI API error: ${response.status}`);
-        }
+    try {
+      // Call Gemini to answer the question based on the documents
+      const prompt = `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
+              If the answer cannot be found in the documents, say so clearly. 
+              Always cite which document(s) you're referencing in your answer.
+              Keep answers concise but comprehensive.
 
-        const aiResponse = await response.json();
-        answer = aiResponse.choices[0].message.content;
-      } catch (openaiError) {
-        console.log('OpenAI failed, trying Ollama fallback:', openaiError);
-        apiUsed = 'ollama';
-        
-        // Fallback to Ollama
-        const ollamaResponse = await fetch('http://localhost:11434/api/generate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'llama3.2',
-            prompt: `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
-            If the answer cannot be found in the documents, say so clearly. 
-            Always cite which document(s) you're referencing in your answer.
-            Keep answers concise but comprehensive.
+              Based on these documents:
+              ${contextContent}
 
-            Based on these documents:
-            ${contextContent}
+              Question: ${question}`;
 
-            Question: ${question}`,
-            stream: false,
-          }),
-        });
-
-        if (!ollamaResponse.ok) {
-          throw new Error(`Ollama API error: ${ollamaResponse.status}`);
-        }
-
-        const ollamaData = await ollamaResponse.json();
-        answer = ollamaData.response;
-      }
-    } else {
-      // No OpenAI key, use Ollama directly
-      apiUsed = 'ollama';
-      const ollamaResponse = await fetch('http://localhost:11434/api/generate', {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'llama3.2',
-          prompt: `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
-          If the answer cannot be found in the documents, say so clearly. 
-          Always cite which document(s) you're referencing in your answer.
-          Keep answers concise but comprehensive.
-
-          Based on these documents:
-          ${contextContent}
-
-          Question: ${question}`,
-          stream: false,
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }]
         }),
       });
 
-      if (!ollamaResponse.ok) {
-        throw new Error(`Ollama API error: ${ollamaResponse.status}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Gemini API error: ${response.status} - ${errorText}`);
+        throw new Error(`Gemini API error: ${response.status}`);
       }
 
-      const ollamaData = await ollamaResponse.json();
-      answer = ollamaData.response;
+      const aiResponse = await response.json();
+      answer = aiResponse.candidates[0].content.parts[0].text;
+    } catch (geminiError) {
+      console.error('Gemini API failed:', geminiError);
+      return new Response(
+        JSON.stringify({ error: 'Failed to get answer from AI: ' + geminiError.message }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     // Determine which documents were likely referenced

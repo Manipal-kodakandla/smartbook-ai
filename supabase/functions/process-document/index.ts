@@ -69,7 +69,9 @@ serve(async (req) => {
               4. A real-world example or analogy
               5. 3-5 key terms/keywords
               
-              Return the result as a JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).
+              Return ONLY a clean JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).
+              
+              Do not include any markdown formatting, backticks, or extra text. Return only the JSON array.
 
               Please analyze this text and break it into educational topics:
 
@@ -106,23 +108,51 @@ serve(async (req) => {
       );
     }
 
-    // Parse the AI response
+    // Parse the AI response - sanitize and clean
     let topics;
     try {
-      topics = JSON.parse(aiContent);
+      // Sanitize the AI response by removing markdown code fences and extra whitespace
+      let cleanedContent = aiContent.trim();
+      
+      // Remove ```json and ``` markers if present
+      if (cleanedContent.startsWith('```json')) {
+        cleanedContent = cleanedContent.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (cleanedContent.startsWith('```')) {
+        cleanedContent = cleanedContent.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
+      
+      topics = JSON.parse(cleanedContent);
       console.log('Parsed topics:', topics.length);
     } catch (parseError) {
       console.error('Failed to parse AI response:', parseError);
-      // Fallback topics if AI response is malformed
-      topics = [
-        {
-          title: "Main Concepts",
-          content: "Key concepts from the uploaded document.",
-          simplified_explanation: "The main ideas and principles covered in your notes.",
-          real_world_example: "These concepts apply to real-world scenarios and practical applications.",
-          keywords: ["concepts", "principles", "ideas"]
+      console.log('Raw AI content:', aiContent);
+      
+      // Try one more time with more aggressive cleaning
+      try {
+        let retryContent = aiContent.replace(/```json|```/g, '').trim();
+        // Remove any text before the first [ or {
+        const jsonStart = Math.min(
+          retryContent.indexOf('[') >= 0 ? retryContent.indexOf('[') : Infinity,
+          retryContent.indexOf('{') >= 0 ? retryContent.indexOf('{') : Infinity
+        );
+        if (jsonStart !== Infinity) {
+          retryContent = retryContent.substring(jsonStart);
         }
-      ];
+        topics = JSON.parse(retryContent);
+        console.log('Retry parse successful:', topics.length);
+      } catch (retryError) {
+        console.error('Retry parse also failed:', retryError);
+        // Fallback topics if AI response is malformed
+        topics = [
+          {
+            title: "Main Concepts",
+            content: "Key concepts from the uploaded document.",
+            simplified_explanation: "The main ideas and principles covered in your notes.",
+            real_world_example: "These concepts apply to real-world scenarios and practical applications.",
+            keywords: ["concepts", "principles", "ideas"]
+          }
+        ];
+      }
     }
 
     // Store topics in database
@@ -153,7 +183,9 @@ serve(async (req) => {
       try {
         console.log('Generating quiz for topic:', topic.title);
         const quizPrompt = `Create a multiple-choice quiz question based on the given topic. 
-                Return a JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).
+                Return ONLY a clean JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).
+                
+                Do not include any markdown formatting, backticks, or extra text. Return only the JSON object.
 
                 Create a quiz question for this topic:
                 Title: ${topic.title}
@@ -178,7 +210,17 @@ serve(async (req) => {
           const quizContent = quizData.candidates[0].content.parts[0].text;
           
           try {
-            const quiz = JSON.parse(quizContent);
+            // Sanitize quiz content similar to topics
+            let cleanedQuizContent = quizContent.trim();
+            
+            // Remove ```json and ``` markers if present
+            if (cleanedQuizContent.startsWith('```json')) {
+              cleanedQuizContent = cleanedQuizContent.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+            } else if (cleanedQuizContent.startsWith('```')) {
+              cleanedQuizContent = cleanedQuizContent.replace(/^```\s*/, '').replace(/\s*```$/, '');
+            }
+            
+            const quiz = JSON.parse(cleanedQuizContent);
             
             await supabaseClient
               .from('quizzes')
@@ -192,8 +234,36 @@ serve(async (req) => {
                 }
               ]);
             console.log('Quiz created for topic:', topic.title);
-          } catch (error) {
-            console.error('Failed to parse quiz JSON for topic:', topic.id, error);
+          } catch (parseError) {
+            console.error('Failed to parse quiz JSON for topic:', topic.id, parseError);
+            
+            // Try one more time with aggressive cleaning
+            try {
+              let retryQuizContent = quizContent.replace(/```json|```/g, '').trim();
+              const jsonStart = Math.min(
+                retryQuizContent.indexOf('{') >= 0 ? retryQuizContent.indexOf('{') : Infinity
+              );
+              if (jsonStart !== Infinity) {
+                retryQuizContent = retryQuizContent.substring(jsonStart);
+              }
+              
+              const quiz = JSON.parse(retryQuizContent);
+              
+              await supabaseClient
+                .from('quizzes')
+                .insert([
+                  {
+                    topic_id: topic.id,
+                    question: quiz.question || 'Question not available',
+                    options: Array.isArray(quiz.options) ? quiz.options : ['Option A', 'Option B', 'Option C', 'Option D'],
+                    correct_answer: typeof quiz.correct_answer === 'number' ? quiz.correct_answer : 0,
+                    explanation: quiz.explanation || 'Explanation not available'
+                  }
+                ]);
+              console.log('Quiz created for topic (retry):', topic.title);
+            } catch (retryError) {
+              console.error('Quiz retry parse also failed for topic:', topic.id, retryError);
+            }
           }
         } else {
           console.error('Quiz generation failed for topic:', topic.id);

@@ -16,6 +16,9 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
   const [currentQuiz, setCurrentQuiz] = useState<Quiz | null>(null);
   const [loading, setLoading] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
+  const [quizCompleted, setQuizCompleted] = useState(false);
+  const [correctAnswers, setCorrectAnswers] = useState(0);
+  const [totalQuizzes, setTotalQuizzes] = useState(0);
   const { user } = useAuth();
 
   // Load topics when document is selected
@@ -35,6 +38,9 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
       setSelectedAnswer(null);
       setShowResult(false);
       setIsCompleted(false);
+      setQuizCompleted(false);
+      setCorrectAnswers(0);
+      setTotalQuizzes(0);
     } catch (error) {
       console.error('Failed to load topics:', error);
     } finally {
@@ -67,10 +73,25 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
       setSelectedAnswer(null);
       setShowResult(false);
       setCurrentQuiz(null);
+      setQuizCompleted(false);
     } else {
       // All topics completed
       setIsCompleted(true);
     }
+  };
+
+  const handleAutoAdvanceAfterQuiz = () => {
+    setTotalQuizzes(prev => prev + 1);
+    setQuizCompleted(true);
+    
+    // Auto advance after 2 seconds
+    setTimeout(() => {
+      if (currentTopic < topics.length - 1) {
+        handleNextTopic();
+      } else {
+        setIsCompleted(true);
+      }
+    }, 2000);
   };
 
   const handleAnswerSelect = async (index: number) => {
@@ -80,6 +101,10 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
     if (user && topics[currentTopic] && currentQuiz) {
       try {
         const isCorrect = index === currentQuiz.correct_answer;
+        if (isCorrect) {
+          setCorrectAnswers(prev => prev + 1);
+        }
+        
         await documentService.updateUserProgress(user.id, topics[currentTopic].id, {
           completed: true,
           quiz_score: isCorrect ? 100 : 0,
@@ -92,6 +117,10 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
     
     setTimeout(() => {
       setShowResult(true);
+      // Auto advance after showing result
+      setTimeout(() => {
+        handleAutoAdvanceAfterQuiz();
+      }, 3000);
     }, 500);
   };
 
@@ -146,18 +175,41 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                 </div>
 
                 {isCompleted ? (
-                  /* Completion Screen */
+                  /* Completion Screen with Summary */
                   <div className="text-center space-y-8">
                     <div className="w-20 h-20 bg-accent/15 rounded-2xl flex items-center justify-center mx-auto">
                       <Trophy className="w-10 h-10 text-accent" />
                     </div>
                     <div>
-                      <h4 className="text-2xl font-bold mb-4 text-accent">🎉 Congratulations!</h4>
+                      <h4 className="text-2xl font-bold mb-4 text-accent">🎉 Learning Complete!</h4>
                       <p className="text-lg text-muted-foreground mb-8">
-                        You've successfully completed all topics from "{selectedDocument?.title}". 
-                        You're now ready to ace your exam!
+                        You've successfully completed all {topics.length} topics from "{selectedDocument?.title}".
                       </p>
                     </div>
+                    
+                    {/* Learning Summary */}
+                    <Card className="p-6 bg-accent-soft border-accent/15 max-w-md mx-auto">
+                      <h5 className="font-semibold text-accent mb-4">📊 Learning Summary</h5>
+                      <div className="space-y-3 text-sm">
+                        <div className="flex justify-between">
+                          <span>Topics Covered:</span>
+                          <span className="font-medium">{topics.length}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Quiz Score:</span>
+                          <span className="font-medium text-accent">
+                            {totalQuizzes > 0 ? `${correctAnswers}/${totalQuizzes} (${Math.round((correctAnswers/totalQuizzes)*100)}%)` : 'N/A'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Strength:</span>
+                          <span className="font-medium">
+                            {correctAnswers/totalQuizzes >= 0.8 ? 'Excellent' : correctAnswers/totalQuizzes >= 0.6 ? 'Good' : 'Needs Review'}
+                          </span>
+                        </div>
+                      </div>
+                    </Card>
+                    
                     <div className="flex gap-4 justify-center">
                       <Button variant="outline" onClick={() => {
                         setCurrentTopic(0);
@@ -165,6 +217,9 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                         setShowQuiz(false);
                         setSelectedAnswer(null);
                         setShowResult(false);
+                        setQuizCompleted(false);
+                        setCorrectAnswers(0);
+                        setTotalQuizzes(0);
                       }}>
                         Review Topics
                       </Button>
@@ -210,7 +265,7 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                       </div>
                     )}
 
-                    {/* Navigation */}
+                    {/* Navigation - Auto-guided flow */}
                     <div className="flex items-center justify-between pt-8">
                       <Button 
                         variant="ghost" 
@@ -222,16 +277,10 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                         Review Previous
                       </Button>
                       <div className="flex gap-3">
-                        <Button variant="outline" onClick={handleStartQuiz} className="gap-2">
+                        <Button variant="learning" onClick={handleStartQuiz} className="gap-2">
                           Take Quiz
                           <ArrowRight className="w-4 h-4" />
                         </Button>
-                        {currentTopic < topics.length - 1 && (
-                          <Button variant="learning" onClick={handleNextTopic} className="gap-2">
-                            Next Topic
-                            <ArrowRight className="w-4 h-4" />
-                          </Button>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -290,19 +339,19 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                     )}
 
                     {showResult && (
-                      <div className="text-center">
-                        <Button variant="learning" size="lg" onClick={() => {
-                          setShowQuiz(false);
-                          setSelectedAnswer(null);
-                          setShowResult(false);
-                          setCurrentQuiz(null);
-                          if (currentTopic >= topics.length - 1) {
-                            setIsCompleted(true);
-                          }
-                        }}>
-                          {currentTopic >= topics.length - 1 ? "Complete Learning" : "Continue Learning"}
-                          <ArrowRight className="w-5 h-5" />
-                        </Button>
+                      <div className="text-center space-y-4">
+                        <div className="p-4 bg-primary/5 rounded-lg">
+                          <p className="text-sm text-muted-foreground">
+                            {quizCompleted 
+                              ? currentTopic >= topics.length - 1 
+                                ? "🎉 All topics completed! Generating your summary..."
+                                : "✅ Moving to next topic automatically..."
+                              : currentTopic >= topics.length - 1 
+                                ? "Complete Learning" 
+                                : "Continue Learning"
+                            }
+                          </p>
+                        </div>
                       </div>
                     )}
                   </div>

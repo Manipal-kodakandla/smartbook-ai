@@ -2,42 +2,125 @@ import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
-// ✅ Use legacy build of pdfjs-dist (works in Edge)
-import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.mjs";
-
-// ✅ Prevent workerSrc error in Edge runtime
-(pdfjsLib as any).GlobalWorkerOptions.workerSrc = "";
+// ✅ DENO-NATIVE PDF extraction using pdf-lib (no Node.js dependencies)
+import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type"
 };
 
-async function extractPdfTextFromBuffer(buf: ArrayBuffer): Promise<string> {
+// ✅ PDF text extraction using pdf-lib (Deno-safe, TypeScript-native)
+async function extractPdfTextWithPdfLib(arrayBuffer: ArrayBuffer) {
   try {
-    const uint8 = new Uint8Array(buf);
-    const loadingTask = pdfjsLib.getDocument({
-      data: uint8,
-      disableWorker: true, // important for Edge runtime
-    });
-    const pdf = await loadingTask.promise;
-    let text = "";
+    console.log("🔄 Loading PDF with pdf-lib (Deno-native)...");
+    const pdfDoc = await PDFDocument.load(arrayBuffer);
+    const pageCount = pdfDoc.getPageCount();
 
-    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-      const page = await pdf.getPage(pageNum);
-      const content = await page.getTextContent();
-      const pageText = content.items
-        .map((item: any) => ("str" in item ? item.str : ""))
-        .join(" ");
-      text += pageText + "\n\n";
+    console.log(`✅ PDF loaded successfully. Pages: ${pageCount}`);
+    const pdfBytes = await pdfDoc.save();
+    const pdfString = new TextDecoder("latin1").decode(pdfBytes);
+
+    let extractedText = "";
+
+    // Extract text objects (Tj commands)
+    const textMatches = pdfString.match(/\((.*?)\)\s*Tj/g) || [];
+    textMatches.forEach(match => {
+      const text = match.match(/\((.*?)\)/)?.[1];
+      if (text && /[a-zA-Z0-9]/.test(text)) {
+        const cleanText = text
+          .replace(/\\n/g, "\n")
+          .replace(/\\r/g, "\r")
+          .replace(/\\t/g, "\t")
+          .replace(/\\\\/g, "\\")
+          .replace(/\\([()])/g, "$1");
+        extractedText += cleanText + " ";
+      }
+    });
+
+    extractedText = extractedText.replace(/\s+/g, " ").trim();
+    console.log(`📄 pdf-lib extraction complete. Length: ${extractedText.length}`);
+
+    if (extractedText.length < 20) {
+      return {
+        text: "[PDF_LIB_MINIMAL] Minimal text found",
+        method: "pdf-lib",
+        status: "minimal_text",
+        confidence: "low"
+      };
     }
 
-    return text.trim();
+    return {
+      text: extractedText,
+      method: "pdf-lib",
+      status: "success",
+      confidence: extractedText.length > 500 ? "high" : "medium"
+    };
   } catch (err) {
-    console.error("PDF.js extraction failed:", err);
-    return "";
+    console.error("❌ pdf-lib extraction failed:", err);
+    return {
+      text: "[PDF_LIB_ERROR] Extraction failed",
+      method: "pdf-lib",
+      status: "error",
+      confidence: "low"
+    };
   }
+}
+
+// ✅ Fallback: Manual text parsing
+async function extractPdfTextManual(arrayBuffer: ArrayBuffer) {
+  try {
+    console.log("🔄 Manual PDF parsing...");
+    const pdfString = new TextDecoder("latin1").decode(arrayBuffer);
+    let extractedText = "";
+
+    const simpleMatches = pdfString.match(/\([^)]{2,}\)/g) || [];
+    simpleMatches.forEach(match => {
+      const text = match.slice(1, -1);
+      if (/[a-zA-Z0-9]/.test(text)) extractedText += text + " ";
+    });
+
+    extractedText = extractedText.replace(/\s+/g, " ").trim();
+    console.log(`📄 Manual extraction length: ${extractedText.length}`);
+
+    if (extractedText.length < 20) {
+      return {
+        text: "[MANUAL_MINIMAL] Minimal text found",
+        method: "manual",
+        status: "minimal_text",
+        confidence: "low"
+      };
+    }
+
+    return {
+      text: extractedText,
+      method: "manual",
+      status: "success",
+      confidence: extractedText.length > 300 ? "medium" : "low"
+    };
+  } catch (err) {
+    console.error("❌ Manual parsing failed:", err);
+    return {
+      text: "[MANUAL_ERROR] Failed",
+      method: "manual",
+      status: "error",
+      confidence: "low"
+    };
+  }
+}
+
+// ✅ Try pdf-lib first, fallback to manual
+async function extractPdfText(arrayBuffer: ArrayBuffer) {
+  console.log("📄 Starting extraction...");
+  const pdfLibResult = await extractPdfTextWithPdfLib(arrayBuffer);
+
+  if (pdfLibResult.status === "success" && pdfLibResult.text.length > 50) {
+    return pdfLibResult;
+  }
+
+  console.log("🔄 Trying manual parsing...");
+  const manualResult = await extractPdfTextManual(arrayBuffer);
+  return manualResult;
 }
 
 serve(async (req) => {
@@ -46,27 +129,20 @@ serve(async (req) => {
   }
 
   try {
-    console.log("Upload request received, method:", req.method);
-
+    console.log("📤 Upload request received");
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
     const formData = await req.formData();
     const file = formData.get("file") as File;
     const userId = formData.get("userId") as string;
 
-    console.log("File:", file?.name, "Size:", file?.size, "Type:", file?.type);
-    console.log("User ID:", userId);
-
     if (!file || !userId) {
       return new Response(
         JSON.stringify({ error: "File and userId are required" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        },
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -75,27 +151,38 @@ serve(async (req) => {
     const fileType = file.type || "application/octet-stream";
     const fileSize = file.size;
 
+    // ✅ 1. Save original file to Supabase Storage
+    const { error: storageError } = await supabase.storage
+      .from("documents")
+      .upload(`${userId}/${fileName}`, new Blob([fileBuffer], { type: fileType }), { upsert: true });
+
+    if (storageError) {
+      console.error("⚠️ Storage upload failed:", storageError);
+    }
+
     let extractedText = "";
+    let extractionStatus = "success";
+    let extractionMethod = "unknown";
+    let extractionConfidence = "low";
 
     if (fileType === "text/plain") {
       extractedText = new TextDecoder().decode(fileBuffer).trim();
+      extractionMethod = "text-decoder";
+      extractionConfidence = extractedText.length > 200 ? "high" : "medium";
     } else if (fileType === "application/pdf") {
-      console.log("PDF detected → extracting text...");
-      extractedText = await extractPdfTextFromBuffer(fileBuffer);
-      console.log("PDF extracted length:", extractedText.length);
-
-      if (!extractedText || extractedText.length < 20) {
-        extractedText =
-          "[EMPTY_OR_IMAGE_PDF] No selectable text found. PDF may be scanned images. Add OCR later.";
-        console.warn("PDF appears to be image-based or empty.");
-      }
-    } else if (fileType.startsWith("image/")) {
-      extractedText =
-        "[IMAGE_FILE] OCR not enabled in this build. Please upload a PDF/TXT or add OCR.";
+      const pdfResult = await extractPdfText(fileBuffer);
+      extractedText = pdfResult.text;
+      extractionMethod = pdfResult.method;
+      extractionStatus = pdfResult.status;
+      extractionConfidence = pdfResult.confidence;
     } else {
-      extractedText = "[UNSUPPORTED_DOC] Unsupported file type.";
+      extractedText = `[UNSUPPORTED] File type '${fileType}'`;
+      extractionStatus = "unsupported";
+      extractionMethod = "none";
+      extractionConfidence = "low";
     }
 
+    // ✅ 2. Store document + metadata
     const { data: document, error: docError } = await supabase
       .from("documents")
       .insert([{
@@ -106,52 +193,40 @@ serve(async (req) => {
         file_size: fileSize,
         extracted_text: extractedText,
         processing_status: "processing",
+        extraction_status: extractionStatus,
+        extraction_method: extractionMethod,
+        extraction_confidence: extractionConfidence
       }])
       .select()
       .single();
 
     if (docError) {
-      console.error("Failed to store document:", docError);
-      return new Response(
-        JSON.stringify({ error: "Failed to store document: " + docError.message }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        },
-      );
+      throw new Error(`DB insert failed: ${docError.message}`);
     }
 
-    console.log("Document stored with id:", document.id);
+    console.log(`✅ Document saved: ${document.id}`);
 
+    // ✅ 3. AI Processing (only if text is useful)
     const hasUsefulText =
-      extractedText &&
-      !extractedText.startsWith("[EMPTY_OR_IMAGE_PDF]") &&
-      !extractedText.startsWith("[UNSUPPORTED_DOC]") &&
-      extractedText.length > 50;
+      extractedText.length > 50 &&
+      extractionStatus === "success" &&
+      !extractedText.startsWith("[");
 
     if (hasUsefulText) {
-      try {
-        const { error: fnError } = await supabase.functions.invoke(
-          "process-document",
-          {
-            body: JSON.stringify({
-              documentId: document.id,
-              extractedText: extractedText.slice(0, 120_000),
-            }),
-          },
-        );
-        if (fnError) console.error("process-document invoke error:", fnError);
-      } catch (e) {
-        console.error("process-document call failed:", e);
-      }
+      console.log("🤖 Invoking AI processing...");
+      await supabase.functions.invoke("process-document", {
+        body: JSON.stringify({
+          documentId: document.id,
+          extractedText: extractedText.slice(0, 120_000),
+          meta: { fileName, fileType, extractionMethod, extractionStatus, extractionConfidence },
+          instruction:
+            "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, say so clearly."
+        })
+      });
     } else {
-      console.warn("Skipping AI processing due to missing/poor text.");
       await supabase
         .from("documents")
-        .update({
-          processing_status: "completed",
-          processed_at: new Date().toISOString(),
-        })
+        .update({ processing_status: "completed", processed_at: new Date().toISOString() })
         .eq("id", document.id);
     }
 
@@ -159,19 +234,18 @@ serve(async (req) => {
       JSON.stringify({
         success: true,
         document,
+        extraction: { status: extractionStatus, method: extractionMethod, confidence: extractionConfidence, length: extractedText.length },
         message: hasUsefulText
-          ? "Document uploaded. Processing started."
-          : "Document uploaded but contained no extractable text; processing skipped.",
+          ? `✅ Extracted with ${extractionMethod} (confidence: ${extractionConfidence}). AI started.`
+          : `📄 Uploaded but insufficient text (status: ${extractionStatus}).`
       }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
-    console.error("upload-document error:", error);
+    console.error("💥 Global error:", error);
     return new Response(
-      JSON.stringify({
-        error: "Upload failed: " + (error?.message ?? String(error)),
-      }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      JSON.stringify({ error: error.message || String(error) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });

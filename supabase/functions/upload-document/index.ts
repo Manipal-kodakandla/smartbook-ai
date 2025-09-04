@@ -2,8 +2,8 @@ import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
-// ✅ Use the ES5 legacy build of pdfjs-dist (safe in Deno/Edge)
-import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/es5/build/pdf.mjs";
+// ✅ Use the legacy build of pdfjs-dist (stable in Deno/Edge)
+import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -12,15 +12,15 @@ const corsHeaders = {
 };
 
 /**
- * Extracts text from a PDF buffer using pdfjs-dist
- * Works in Supabase Edge (Deno) by disabling worker usage
+ * Extracts text from a PDF buffer using pdfjs-dist (legacy build).
+ * Works in Supabase Edge (Deno) by disabling worker usage.
  */
 async function extractPdfTextFromBuffer(buf: ArrayBuffer): Promise<string> {
   try {
     const uint8 = new Uint8Array(buf);
     const loadingTask = pdfjsLib.getDocument({
       data: uint8,
-      disableWorker: true, // critical in Edge runtime
+      disableWorker: true, // ✅ critical in Edge runtime
     });
     const pdf = await loadingTask.promise;
     let text = "";
@@ -81,7 +81,7 @@ serve(async (req) => {
     if (fileType === "text/plain") {
       extractedText = new TextDecoder().decode(fileBuffer).trim();
     } else if (fileType === "application/pdf") {
-      console.log("PDF detected → extracting via pdfjs-dist (es5)...");
+      console.log("PDF detected → extracting via pdfjs-dist (legacy)...");
       extractedText = await extractPdfTextFromBuffer(fileBuffer);
       console.log("PDF extracted length:", extractedText.length);
 

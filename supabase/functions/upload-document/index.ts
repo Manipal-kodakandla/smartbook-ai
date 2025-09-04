@@ -2,7 +2,7 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.56.1';
-import { getDocument } from 'https://esm.sh/pdfjs-dist@4.0.379/build/pdf.min.mjs';
+import { default as pdfParse } from 'https://esm.sh/pdf-parse@1.1.1';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -61,34 +61,13 @@ serve(async (req) => {
     } else if (fileType === 'application/pdf') {
       console.log('PDF file detected, extracting text...');
       try {
-        // Extract text from PDF using pdf.js
-        const uint8Array = new Uint8Array(fileBuffer);
-        const pdf = await getDocument({ data: uint8Array }).promise;
-        console.log('PDF loaded, pages:', pdf.numPages);
+        // Extract text from PDF using pdf-parse
+        const buffer = Buffer.from(fileBuffer);
+        const pdfData = await pdfParse(buffer);
         
-        let fullText = '';
-        
-        // Extract text from each page
-        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-          try {
-            const page = await pdf.getPage(pageNum);
-            const textContent = await page.getTextContent();
-            const pageText = textContent.items
-              .filter((item: any) => item.str && item.str.trim().length > 0)
-              .map((item: any) => item.str)
-              .join(' ');
-            
-            if (pageText.trim()) {
-              fullText += pageText + '\n\n';
-            }
-            console.log(`Page ${pageNum} text extracted: ${pageText.length} characters`);
-          } catch (pageError) {
-            console.error(`Error extracting text from page ${pageNum}:`, pageError);
-          }
-        }
-        
-        extractedText = fullText.trim();
-        console.log('Total PDF text extracted:', extractedText.length, 'characters');
+        extractedText = pdfData.text.trim();
+        console.log('PDF text extracted:', extractedText.length, 'characters');
+        console.log('PDF text preview:', extractedText.substring(0, 200));
         
         if (extractedText.length === 0) {
           extractedText = 'PDF appears to be empty or contains only images. Please ensure the PDF contains readable text.';

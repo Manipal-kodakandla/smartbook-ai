@@ -2,6 +2,7 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.56.1';
+import { getDocument } from 'https://esm.sh/pdfjs-dist@4.0.379/build/pdf.min.mjs';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -58,9 +59,46 @@ serve(async (req) => {
       extractedText = new TextDecoder().decode(fileBuffer);
       console.log('Text extracted from plain text file');
     } else if (fileType === 'application/pdf') {
-      // For PDF files, we'll store the raw content and process later
-      extractedText = 'PDF content - will be processed by AI service';
-      console.log('PDF file detected');
+      console.log('PDF file detected, extracting text...');
+      try {
+        // Extract text from PDF using pdf.js
+        const uint8Array = new Uint8Array(fileBuffer);
+        const pdf = await getDocument({ data: uint8Array }).promise;
+        console.log('PDF loaded, pages:', pdf.numPages);
+        
+        let fullText = '';
+        
+        // Extract text from each page
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          try {
+            const page = await pdf.getPage(pageNum);
+            const textContent = await page.getTextContent();
+            const pageText = textContent.items
+              .filter((item: any) => item.str && item.str.trim().length > 0)
+              .map((item: any) => item.str)
+              .join(' ');
+            
+            if (pageText.trim()) {
+              fullText += pageText + '\n\n';
+            }
+            console.log(`Page ${pageNum} text extracted: ${pageText.length} characters`);
+          } catch (pageError) {
+            console.error(`Error extracting text from page ${pageNum}:`, pageError);
+          }
+        }
+        
+        extractedText = fullText.trim();
+        console.log('Total PDF text extracted:', extractedText.length, 'characters');
+        
+        if (extractedText.length === 0) {
+          extractedText = 'PDF appears to be empty or contains only images. Please ensure the PDF contains readable text.';
+          console.log('PDF extraction resulted in empty text');
+        }
+        
+      } catch (pdfError) {
+        console.error('PDF extraction error:', pdfError);
+        extractedText = 'Error extracting text from PDF. The file may be corrupted or contain only images.';
+      }
     } else if (fileType.startsWith('image/')) {
       // For images, we'll use OCR (simulated for now)
       extractedText = 'Image content - will be processed with OCR';

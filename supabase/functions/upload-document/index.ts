@@ -1,23 +1,26 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
-// ✅ Use the legacy build → avoids workerSrc error in Deno
-import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.mjs";
+
+// ✅ Use the ES5 legacy build of pdfjs-dist (safe in Deno/Edge)
+import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/es5/build/pdf.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type"
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
 };
 
 /**
- * Extracts text from a PDF buffer using pdfjs-dist (legacy build, no worker needed)
+ * Extracts text from a PDF buffer using pdfjs-dist
+ * Works in Supabase Edge (Deno) by disabling worker usage
  */
 async function extractPdfTextFromBuffer(buf: ArrayBuffer): Promise<string> {
   try {
     const uint8 = new Uint8Array(buf);
     const loadingTask = pdfjsLib.getDocument({
       data: uint8,
-      disableWorker: true // ✅ critical in Edge/Deno runtime
+      disableWorker: true, // critical in Edge runtime
     });
     const pdf = await loadingTask.promise;
     let text = "";
@@ -45,9 +48,10 @@ serve(async (req) => {
 
   try {
     console.log("Upload request received, method:", req.method);
+
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
     );
 
     const formData = await req.formData();
@@ -60,7 +64,10 @@ serve(async (req) => {
     if (!file || !userId) {
       return new Response(
         JSON.stringify({ error: "File and userId are required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -74,16 +81,18 @@ serve(async (req) => {
     if (fileType === "text/plain") {
       extractedText = new TextDecoder().decode(fileBuffer).trim();
     } else if (fileType === "application/pdf") {
-      console.log("PDF detected → extracting text...");
+      console.log("PDF detected → extracting via pdfjs-dist (es5)...");
       extractedText = await extractPdfTextFromBuffer(fileBuffer);
       console.log("PDF extracted length:", extractedText.length);
 
       if (!extractedText || extractedText.length < 20) {
-        extractedText = "[EMPTY_OR_IMAGE_PDF] No selectable text found. PDF may be scanned images. Add OCR later.";
+        extractedText =
+          "[EMPTY_OR_IMAGE_PDF] No selectable text found. PDF may be scanned images. Add OCR later.";
         console.warn("PDF appears to be image-based or empty.");
       }
     } else if (fileType.startsWith("image/")) {
-      extractedText = "[IMAGE_FILE] OCR not enabled in this build. Please upload a PDF/TXT or add OCR.";
+      extractedText =
+        "[IMAGE_FILE] OCR not enabled in this build. Please upload a PDF/TXT or add OCR.";
     } else {
       extractedText = "[UNSUPPORTED_DOC] Unsupported file type.";
     }
@@ -98,7 +107,7 @@ serve(async (req) => {
         file_type: fileType,
         file_size: fileSize,
         extracted_text: extractedText,
-        processing_status: "processing"
+        processing_status: "processing",
       }])
       .select()
       .single();
@@ -107,7 +116,10 @@ serve(async (req) => {
       console.error("Failed to store document:", docError);
       return new Response(
         JSON.stringify({ error: "Failed to store document: " + docError.message }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
       );
     }
 
@@ -122,12 +134,15 @@ serve(async (req) => {
 
     if (hasUsefulText) {
       try {
-        const { error: fnError } = await supabase.functions.invoke("process-document", {
-          body: JSON.stringify({
-            documentId: document.id,
-            extractedText: extractedText.slice(0, 120_000) // safety limit
-          })
-        });
+        const { error: fnError } = await supabase.functions.invoke(
+          "process-document",
+          {
+            body: JSON.stringify({
+              documentId: document.id,
+              extractedText: extractedText.slice(0, 120_000), // safety limit
+            }),
+          },
+        );
         if (fnError) console.error("process-document invoke error:", fnError);
       } catch (e) {
         console.error("process-document call failed:", e);
@@ -138,7 +153,7 @@ serve(async (req) => {
         .from("documents")
         .update({
           processing_status: "completed",
-          processed_at: new Date().toISOString()
+          processed_at: new Date().toISOString(),
         })
         .eq("id", document.id);
     }
@@ -149,15 +164,17 @@ serve(async (req) => {
         document,
         message: hasUsefulText
           ? "Document uploaded. Processing started."
-          : "Document uploaded but contained no extractable text; processing skipped."
+          : "Document uploaded but contained no extractable text; processing skipped.",
       }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (error) {
     console.error("upload-document error:", error);
     return new Response(
-      JSON.stringify({ error: "Upload failed: " + (error?.message ?? String(error)) }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({
+        error: "Upload failed: " + (error?.message ?? String(error)),
+      }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });

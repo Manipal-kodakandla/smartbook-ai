@@ -59,22 +59,24 @@ serve(async (req) => {
     
     try {
       console.log('Calling Gemini for topic analysis...');
-      const prompt = `You are an educational AI that breaks down academic content into digestible topics. 
-              Analyze the provided text and create 3-5 main topics with the following structure:
+      const prompt = `You are an educational AI that analyzes academic notes and creates learning topics ONLY from the provided content.
+
+              IMPORTANT: Base your analysis ENTIRELY on the extracted text content below. Do NOT add any general knowledge about PDFs, OCR, AI, or document processing.
+
+              Analyze the provided notes content and create 3-5 main learning topics with this structure:
               
-              For each topic, provide:
-              1. A clear title (max 50 characters)
-              2. Main content explanation (2-3 sentences)
-              3. A simplified explanation suitable for students
-              4. A real-world example or analogy
-              5. 3-5 key terms/keywords
+              For each topic found in the notes:
+              1. A clear title (max 50 characters) - from the actual content
+              2. Main content explanation (2-3 sentences) - summarizing what the notes say about this topic
+              3. A simplified explanation - making the notes content easier to understand
+              4. A real-world example or analogy - related to the notes topic, not document processing
+              5. 3-5 key terms/keywords - from the actual notes content
               
               Return ONLY a clean JSON array where each topic has: title, content, simplified_explanation, real_world_example, keywords (array of strings).
               
               Do not include any markdown formatting, backticks, or extra text. Return only the JSON array.
 
-              Please analyze this text and break it into educational topics:
-
+              EXTRACTED NOTES CONTENT TO ANALYZE:
               ${extractedText.substring(0, 8000)}`;
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${geminiApiKey}`, {
@@ -182,14 +184,18 @@ serve(async (req) => {
     for (const topic of storedTopics) {
       try {
         console.log('Generating quiz for topic:', topic.title);
-        const quizPrompt = `Create a multiple-choice quiz question based on the given topic. 
+        const quizPrompt = `Create a multiple-choice quiz question based ONLY on the provided topic content from the user's notes.
+
+                IMPORTANT: Base the quiz question ENTIRELY on the topic content provided. Do NOT ask about general concepts like PDFs, document processing, or AI.
+                
                 Return ONLY a clean JSON object with: question (string), options (array of 4 strings), correct_answer (0-3 index), explanation (string).
                 
                 Do not include any markdown formatting, backticks, or extra text. Return only the JSON object.
 
-                Create a quiz question for this topic:
+                Create a quiz question for this specific topic content:
                 Title: ${topic.title}
-                Content: ${topic.content}`;
+                Content: ${topic.content}
+                Simplified Explanation: ${topic.simplified_explanation}`;
 
         const quizResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${geminiApiKey}`, {
           method: 'POST',

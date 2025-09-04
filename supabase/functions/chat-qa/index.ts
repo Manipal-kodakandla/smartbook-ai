@@ -82,15 +82,19 @@ serve(async (req) => {
 
     try {
       // Call Gemini to answer the question based on the documents
-      const prompt = `You are a helpful educational assistant. Answer questions based ONLY on the provided document content. 
-              If the answer cannot be found in the documents, say so clearly. 
-              Always cite which document(s) you're referencing in your answer.
-              Keep answers concise but comprehensive.
+      const prompt = `You are a helpful educational assistant. Answer questions based ONLY on the provided document content from the user's uploaded notes.
 
-              Based on these documents:
+              CRITICAL INSTRUCTIONS:
+              - Use ONLY the extracted text content provided below
+              - If the answer cannot be found in the provided notes, respond: "Your uploaded notes do not contain information about this topic."
+              - Do NOT use external knowledge or make assumptions
+              - Always cite which document(s) you're referencing in your answer
+              - Keep answers concise but comprehensive
+
+              UPLOADED NOTES CONTENT:
               ${contextContent}
 
-              Question: ${question}`;
+              USER QUESTION: ${question}`;
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${geminiApiKey}`, {
         method: 'POST',

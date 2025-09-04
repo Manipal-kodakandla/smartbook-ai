@@ -4,11 +4,15 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+
+const supabase = createClient(
+  Deno.env.get("SUPABASE_URL") ?? "",
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+);
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -16,56 +20,56 @@ serve(async (req) => {
   }
 
   try {
-    const { documentId, extractedText } = await req.json();
+    const { documentId, extractedText, meta, instruction } = await req.json();
 
     if (!documentId || !extractedText) {
       return new Response(
         JSON.stringify({ error: "documentId and extractedText are required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     if (!GEMINI_API_KEY) {
       return new Response(
         JSON.stringify({ error: "Gemini API key not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Guard against junk “PDF/placeholder” text
-    if (
-      extractedText.startsWith("[EMPTY_OR_IMAGE_PDF]") ||
-      extractedText.startsWith("[UNSUPPORTED_DOC]")
-    ) {
-      return new Response(
-        JSON.stringify({ error: "Document has no usable text for processing." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+    // Apply confidence-based guardrails
+    const confidence = meta?.extractionConfidence ?? "unknown";
+    let cautionNote = "";
+    if (confidence === "low") {
+      cautionNote = "\n⚠️ WARNING: Extracted text may be incomplete or messy. Be cautious in summarizing. If unsure, state 'uncertain'.";
     }
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-    );
-
-    // Keep prompt within safe bounds
+    // Keep within safe size
     const notes = extractedText.slice(0, 80_000);
 
     const systemPrompt = `
-You are converting raw study notes into learning topics.
+You are converting raw study notes into structured learning topics.
+
 RULES:
-- Use ONLY the content in NOTES below.
-- DO NOT mention PDFs, OCR, files, AI processing, etc.
-- No extra knowledge beyond the notes.
-- Output valid JSON (no markdown), exactly an array of 3–5 objects:
+- Use ONLY the text in NOTES below.
+- Do not invent facts outside NOTES.
+- Ignore formatting/typos.
+- If content looks incomplete, explicitly mention uncertainty.
+- Output valid JSON (no markdown), array of 3–5 objects:
   [{ "title": "...", "content": "...", "simplified_explanation": "...", "real_world_example": "...", "keywords": ["..."] }]
 - "title" <= 50 chars.
-- "keywords" must be an array of 3–6 short terms from the notes.
+- "keywords" = 3–6 terms.
+
 NOTES:
 ${notes}
+
+Extra meta:
+- Extraction method: ${meta?.extractionMethod ?? "unknown"}
+- Confidence: ${confidence}
+
+${instruction ?? ""}${cautionNote}
 `.trim();
 
-    // Ask Gemini for strict JSON
+    // === Gemini API call ===
     const resp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
       {
@@ -73,17 +77,13 @@ ${notes}
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: systemPrompt }] }],
-          generationConfig: {
-            response_mime_type: "application/json",
-          },
+          generationConfig: { response_mime_type: "application/json" }
         }),
-      },
+      }
     );
 
     if (!resp.ok) {
-      const t = await resp.text();
-      console.error("Gemini topic error:", resp.status, t);
-      throw new Error(`Gemini API error ${resp.status}`);
+      throw new Error(`Gemini API error ${resp.status}: ${await resp.text()}`);
     }
 
     const data = await resp.json();
@@ -93,19 +93,18 @@ ${notes}
     try {
       topics = JSON.parse(raw);
       if (!Array.isArray(topics)) throw new Error("Not an array");
-    } catch (e) {
-      console.error("Topic JSON parse failed; raw:", raw);
-      topics = [
-        {
-          title: "Main Concepts",
-          content: "Key concepts identified from your notes.",
-          simplified_explanation: "The main ideas rewritten simply.",
-          real_world_example: "How this concept might show up practically.",
-          keywords: ["overview", "concepts"],
-        },
-      ];
+    } catch {
+      console.error("Topic JSON parse failed. Raw:", raw);
+      topics = [{
+        title: "Main Concepts",
+        content: "Key concepts identified from your notes.",
+        simplified_explanation: "The main ideas rewritten simply.",
+        real_world_example: "Example of application.",
+        keywords: ["concepts"]
+      }];
     }
 
+    // Insert topics
     const rows = topics.map((t: any, i: number) => ({
       document_id: documentId,
       title: t.title || `Topic ${i + 1}`,
@@ -116,25 +115,17 @@ ${notes}
       topic_order: i,
     }));
 
-    const { data: stored, error: insertErr } = await createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-    )
+    const { data: stored, error: insertErr } = await supabase
       .from("topics")
       .insert(rows)
       .select();
 
-    if (insertErr) {
-      console.error("Insert topics error:", insertErr);
-      throw new Error("Failed to store topics");
-    }
+    if (insertErr) throw new Error(`Insert topics failed: ${insertErr.message}`);
 
-    console.log("Topics stored:", stored?.length ?? 0);
-
-    // Create one MCQ per topic
+    // === Generate quizzes ===
     for (const topic of stored ?? []) {
       const qPrompt = `
-Create ONE multiple-choice question strictly from this topic:
+Make ONE multiple-choice question strictly from this topic.
 
 TITLE: ${topic.title}
 CONTENT: ${topic.content}
@@ -152,65 +143,53 @@ Return JSON ONLY:
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               contents: [{ parts: [{ text: qPrompt }] }],
-              generationConfig: {
-                response_mime_type: "application/json",
-              },
+              generationConfig: { response_mime_type: "application/json" }
             }),
-          },
+          }
         );
+
         if (!qResp.ok) {
-          console.error("Gemini quiz error for topic", topic.id, await qResp.text());
+          console.error("Quiz gen error:", await qResp.text());
           continue;
         }
+
         const qData = await qResp.json();
         const qRaw = qData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
         let quiz: any;
         try {
           quiz = JSON.parse(qRaw);
         } catch {
-          console.error("Quiz JSON parse failed; raw:", qRaw);
+          console.error("Quiz parse failed. Raw:", qRaw);
           continue;
         }
-        await createClient(
-          Deno.env.get("SUPABASE_URL") ?? "",
-          Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-        )
-          .from("quizzes")
-          .insert([
-            {
-              topic_id: topic.id,
-              question: quiz.question || "Question not available",
-              options: Array.isArray(quiz.options)
-                ? quiz.options
-                : ["Option A", "Option B", "Option C", "Option D"],
-              correct_answer:
-                typeof quiz.correct_answer === "number" ? quiz.correct_answer : 0,
-              explanation: quiz.explanation || "",
-            },
-          ]);
-        console.log("Quiz stored for topic:", topic.title);
+
+        await supabase.from("quizzes").insert([{
+          topic_id: topic.id,
+          question: quiz.question || "Question unavailable",
+          options: Array.isArray(quiz.options) ? quiz.options : ["A", "B", "C", "D"],
+          correct_answer: typeof quiz.correct_answer === "number" ? quiz.correct_answer : 0,
+          explanation: quiz.explanation || "",
+        }]);
       } catch (e) {
-        console.error("Quiz generation failed for topic:", topic.id, e);
+        console.error("Quiz generation failed:", e);
       }
     }
 
+    // Mark document completed
     await supabase
       .from("documents")
-      .update({
-        processing_status: "completed",
-        processed_at: new Date().toISOString(),
-      })
+      .update({ processing_status: "completed", processed_at: new Date().toISOString() })
       .eq("id", documentId);
 
     return new Response(
       JSON.stringify({ success: true, topics: rows, message: "Document processed" }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-  } catch (error: any) {
-    console.error("process-document error:", error);
+  } catch (err) {
+    console.error("process-document error:", err);
     return new Response(
-      JSON.stringify({ error: error?.message ?? String(error) }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      JSON.stringify({ error: err?.message || String(err) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });

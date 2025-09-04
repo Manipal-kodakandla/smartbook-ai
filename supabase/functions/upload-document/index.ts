@@ -2,8 +2,11 @@ import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
-// ✅ Use the legacy build of pdfjs-dist (stable in Deno/Edge)
+// ✅ Use legacy build of pdfjs-dist (works in Edge)
 import * as pdfjsLib from "https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.mjs";
+
+// ✅ Prevent workerSrc error in Edge runtime
+(pdfjsLib as any).GlobalWorkerOptions.workerSrc = "";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,16 +14,12 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
-/**
- * Extracts text from a PDF buffer using pdfjs-dist (legacy build).
- * Works in Supabase Edge (Deno) by disabling worker usage.
- */
 async function extractPdfTextFromBuffer(buf: ArrayBuffer): Promise<string> {
   try {
     const uint8 = new Uint8Array(buf);
     const loadingTask = pdfjsLib.getDocument({
       data: uint8,
-      disableWorker: true, // ✅ critical in Edge runtime
+      disableWorker: true, // important for Edge runtime
     });
     const pdf = await loadingTask.promise;
     let text = "";
@@ -81,7 +80,7 @@ serve(async (req) => {
     if (fileType === "text/plain") {
       extractedText = new TextDecoder().decode(fileBuffer).trim();
     } else if (fileType === "application/pdf") {
-      console.log("PDF detected → extracting via pdfjs-dist (legacy)...");
+      console.log("PDF detected → extracting text...");
       extractedText = await extractPdfTextFromBuffer(fileBuffer);
       console.log("PDF extracted length:", extractedText.length);
 
@@ -97,7 +96,6 @@ serve(async (req) => {
       extractedText = "[UNSUPPORTED_DOC] Unsupported file type.";
     }
 
-    // Store document in DB
     const { data: document, error: docError } = await supabase
       .from("documents")
       .insert([{
@@ -125,7 +123,6 @@ serve(async (req) => {
 
     console.log("Document stored with id:", document.id);
 
-    // Run AI processing only if meaningful text was extracted
     const hasUsefulText =
       extractedText &&
       !extractedText.startsWith("[EMPTY_OR_IMAGE_PDF]") &&
@@ -139,7 +136,7 @@ serve(async (req) => {
           {
             body: JSON.stringify({
               documentId: document.id,
-              extractedText: extractedText.slice(0, 120_000), // safety limit
+              extractedText: extractedText.slice(0, 120_000),
             }),
           },
         );

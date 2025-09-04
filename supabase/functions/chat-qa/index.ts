@@ -66,8 +66,11 @@ serve(async (req) => {
 
     // Combine all document content for context
     const contextContent = documents.map(doc => 
-      `Document: ${doc.title}\nContent: ${doc.extracted_text}`
+      `Document Title: ${doc.title}\nNotes Content:\n${doc.extracted_text || 'No content extracted'}`
     ).join('\n\n---\n\n');
+    
+    console.log('Context content length:', contextContent.length);
+    console.log('Context preview:', contextContent.substring(0, 300));
 
     // Use Gemini API to answer the question
     let answer = '';
@@ -82,19 +85,21 @@ serve(async (req) => {
 
     try {
       // Call Gemini to answer the question based on the documents
-      const prompt = `You are a helpful educational assistant. Answer questions based ONLY on the provided document content from the user's uploaded notes.
+      const prompt = `You are answering questions about study notes. Use ONLY the notes content provided below.
 
-              CRITICAL INSTRUCTIONS:
-              - Use ONLY the extracted text content provided below
-              - If the answer cannot be found in the provided notes, respond: "Your uploaded notes do not contain information about this topic."
-              - Do NOT use external knowledge or make assumptions
-              - Always cite which document(s) you're referencing in your answer
-              - Keep answers concise but comprehensive
+STRICT RULES:
+- Answer based ONLY on the notes content below
+- If the notes don't contain the answer, respond: "Your uploaded notes do not explain this topic."
+- Do NOT use external knowledge or general information
+- Quote relevant parts from the notes when possible
+- Mention which document contains the information
 
-              UPLOADED NOTES CONTENT:
-              ${contextContent}
+STUDY NOTES:
+${contextContent}
 
-              USER QUESTION: ${question}`;
+QUESTION: ${question}
+
+Answer from the notes only:`;
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${geminiApiKey}`, {
         method: 'POST',

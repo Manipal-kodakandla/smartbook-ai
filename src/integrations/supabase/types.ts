@@ -165,6 +165,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "fk_quizzes_topic_id"
+            columns: ["topic_id"]
+            isOneToOne: false
+            referencedRelation: "topics"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "quizzes_topic_id_fkey"
             columns: ["topic_id"]
             isOneToOne: false
@@ -211,6 +218,13 @@ export type Database = {
           updated_at?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "fk_topics_document_id"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "topics_document_id_fkey"
             columns: ["document_id"]

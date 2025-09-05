@@ -82,6 +82,9 @@ export type Database = {
         Row: {
           created_at: string | null
           extracted_text: string | null
+          extraction_confidence: string | null
+          extraction_method: string | null
+          extraction_status: string | null
           file_name: string
           file_size: number | null
           file_type: string
@@ -97,6 +100,9 @@ export type Database = {
         Insert: {
           created_at?: string | null
           extracted_text?: string | null
+          extraction_confidence?: string | null
+          extraction_method?: string | null
+          extraction_status?: string | null
           file_name: string
           file_size?: number | null
           file_type: string
@@ -112,6 +118,9 @@ export type Database = {
         Update: {
           created_at?: string | null
           extracted_text?: string | null
+          extraction_confidence?: string | null
+          extraction_method?: string | null
+          extraction_status?: string | null
           file_name?: string
           file_size?: number | null
           file_type?: string

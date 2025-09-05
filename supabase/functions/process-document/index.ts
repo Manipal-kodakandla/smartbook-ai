@@ -21,13 +21,23 @@ function cleanExtractedText(input: string): string {
     .trim();
 }
 
-// 🛡️ Safe JSON parse
-function safeJsonParse(raw: string, fallback: any) {
+// 🛡️ Safe JSON parse + normalize
+function safeParseTopics(raw: string) {
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    if (typeof parsed === "object" && parsed !== null) {
+      return [parsed]; // wrap single object into array
+    }
+
+    console.error("Unexpected topic format:", parsed);
+    return [];
   } catch {
-    console.error("JSON parse failed. Raw:", raw.slice(0, 500)); // log only first 500 chars
-    return fallback;
+    console.error("Topic JSON parse failed. Raw snippet:", raw.slice(0, 300));
+    return [];
   }
 }
 
@@ -94,6 +104,7 @@ RULES:
 - If content looks incomplete, explicitly mention uncertainty.
 - Output valid JSON (no markdown), array of 3–5 objects:
   [{ "title": "...", "content": "...", "simplified_explanation": "...", "real_world_example": "...", "keywords": ["..."] }]
+- If you only produce one object, still wrap it in an array.
 - "title" <= 50 chars.
 - "keywords" = 3–6 terms.
 
@@ -127,20 +138,20 @@ ${instruction ?? ""}${cautionNote}
     const data = await resp.json();
     const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "[]";
 
-    // 🛡️ Parse and clean topics
-    const parsed = safeJsonParse(raw, []);
-    const topics =
-      Array.isArray(parsed) && parsed.length > 0
-        ? parsed
-        : [
-            {
-              title: "Main Concepts",
-              content: "Key concepts identified from your notes.",
-              simplified_explanation: "The main ideas rewritten simply.",
-              real_world_example: "Example of application.",
-              keywords: ["concepts"],
-            },
-          ];
+    // 🛡️ Parse and normalize topics
+    let topics = safeParseTopics(raw);
+
+    if (topics.length === 0) {
+      topics = [
+        {
+          title: "Main Concepts",
+          content: "Key concepts identified from your notes.",
+          simplified_explanation: "The main ideas rewritten simply.",
+          real_world_example: "Example of application.",
+          keywords: ["concepts"],
+        },
+      ];
+    }
 
     const rows = topics.map((t, i) => cleanTopic(t, i, documentId));
 
@@ -186,13 +197,7 @@ Return JSON ONLY:
         const qData = await qResp.json();
         const qRaw = qData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 
-        let quiz;
-        try {
-          quiz = safeJsonParse(qRaw, null);
-        } catch {
-          continue;
-        }
-
+        const quiz = safeParseTopics(qRaw)[0] ?? null;
         if (!quiz) continue;
 
         await supabase.from("quizzes").insert([

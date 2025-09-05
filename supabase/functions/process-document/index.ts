@@ -16,22 +16,37 @@ const supabase = createClient(
 // 🧹 Clean extracted text (remove binary/unicode junk)
 function cleanExtractedText(input: string): string {
   return input
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ") // keep printable ASCII
-    .replace(/\s+/g, " ") // collapse spaces
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ") // keep printable ASCII only
+    .replace(/\s+/g, " ")                      // collapse multiple spaces
     .trim();
 }
 
-// 🛡️ Safe JSON parser (handles single objects, broken JSON)
-function safeJsonParse(raw: string, fallback: any): any {
+// 🛡️ Safe JSON parse
+function safeJsonParse(raw: string, fallback: any) {
   try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
-    if (typeof parsed === "object") return [parsed]; // wrap single object
-    return fallback;
+    return JSON.parse(raw);
   } catch {
-    console.error("⚠️ JSON parse failed. Raw:", raw);
+    console.error("JSON parse failed. Raw:", raw.slice(0, 500)); // log only first 500 chars
     return fallback;
   }
+}
+
+// 🧹 Clean topic object before DB insert
+function cleanTopic(t: any, i: number, documentId: string) {
+  const clean = (val: string) =>
+    typeof val === "string" ? cleanExtractedText(val) : "";
+
+  return {
+    document_id: documentId,
+    title: clean(t.title) || `Topic ${i + 1}`,
+    content: clean(t.content),
+    simplified_explanation: clean(t.simplified_explanation),
+    real_world_example: clean(t.real_world_example),
+    keywords: Array.isArray(t.keywords)
+      ? t.keywords.map((k: any) => clean(String(k))).filter(Boolean)
+      : ["general"],
+    topic_order: i,
+  };
 }
 
 serve(async (req) => {
@@ -45,14 +60,14 @@ serve(async (req) => {
     if (!documentId || !extractedText) {
       return new Response(JSON.stringify({ error: "documentId and extractedText are required" }), {
         status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     if (!GEMINI_API_KEY) {
       return new Response(JSON.stringify({ error: "Gemini API key not configured" }), {
         status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -100,8 +115,8 @@ ${instruction ?? ""}${cautionNote}
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: systemPrompt }] }],
-          generationConfig: { response_mime_type: "application/json" }
-        })
+          generationConfig: { response_mime_type: "application/json" },
+        }),
       }
     );
 
@@ -112,28 +127,24 @@ ${instruction ?? ""}${cautionNote}
     const data = await resp.json();
     const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "[]";
 
-    // 🛡️ Parse topics safely
-    const topics = safeJsonParse(raw, [
-      {
-        title: "Main Concepts",
-        content: "Key concepts identified from your notes.",
-        simplified_explanation: "The main ideas rewritten simply.",
-        real_world_example: "Example of application.",
-        keywords: ["concepts"]
-      }
-    ]);
+    // 🛡️ Parse and clean topics
+    const parsed = safeJsonParse(raw, []);
+    const topics =
+      Array.isArray(parsed) && parsed.length > 0
+        ? parsed
+        : [
+            {
+              title: "Main Concepts",
+              content: "Key concepts identified from your notes.",
+              simplified_explanation: "The main ideas rewritten simply.",
+              real_world_example: "Example of application.",
+              keywords: ["concepts"],
+            },
+          ];
 
-    // Insert topics
-    const rows = topics.map((t: any, i: number) => ({
-      document_id: documentId,
-      title: t.title || `Topic ${i + 1}`,
-      content: t.content || "",
-      simplified_explanation: t.simplified_explanation || "",
-      real_world_example: t.real_world_example || "",
-      keywords: Array.isArray(t.keywords) ? t.keywords : ["general"],
-      topic_order: i
-    }));
+    const rows = topics.map((t, i) => cleanTopic(t, i, documentId));
 
+    // Insert topics into DB
     const { data: stored, error: insertErr } = await supabase
       .from("topics")
       .insert(rows)
@@ -162,8 +173,8 @@ Return JSON ONLY:
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               contents: [{ parts: [{ text: qPrompt }] }],
-              generationConfig: { response_mime_type: "application/json" }
-            })
+              generationConfig: { response_mime_type: "application/json" },
+            }),
           }
         );
 
@@ -175,17 +186,26 @@ Return JSON ONLY:
         const qData = await qResp.json();
         const qRaw = qData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 
-        const quiz = safeJsonParse(qRaw, null);
-        if (!quiz || !quiz.question) continue;
+        let quiz;
+        try {
+          quiz = safeJsonParse(qRaw, null);
+        } catch {
+          continue;
+        }
+
+        if (!quiz) continue;
 
         await supabase.from("quizzes").insert([
           {
             topic_id: topic.id,
-            question: quiz.question || "Question unavailable",
-            options: Array.isArray(quiz.options) ? quiz.options : ["A", "B", "C", "D"],
-            correct_answer: typeof quiz.correct_answer === "number" ? quiz.correct_answer : 0,
-            explanation: quiz.explanation || ""
-          }
+            question: cleanExtractedText(quiz.question || "Question unavailable"),
+            options: Array.isArray(quiz.options)
+              ? quiz.options.map((o: string) => cleanExtractedText(o))
+              : ["A", "B", "C", "D"],
+            correct_answer:
+              typeof quiz.correct_answer === "number" ? quiz.correct_answer : 0,
+            explanation: cleanExtractedText(quiz.explanation || ""),
+          },
         ]);
       } catch (e) {
         console.error("Quiz generation failed:", e);
@@ -197,19 +217,21 @@ Return JSON ONLY:
       .from("documents")
       .update({
         processing_status: "completed",
-        processed_at: new Date().toISOString()
+        processed_at: new Date().toISOString(),
       })
       .eq("id", documentId);
 
     return new Response(
       JSON.stringify({ success: true, topics: rows, message: "Document processed" }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
     );
   } catch (err) {
     console.error("process-document error:", err);
-    return new Response(
-      JSON.stringify({ error: err?.message || String(err) }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: err?.message || String(err) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });

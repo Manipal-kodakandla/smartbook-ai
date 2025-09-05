@@ -4,7 +4,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
 };
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
@@ -17,30 +18,41 @@ const supabase = createClient(
 function cleanExtractedText(input: string): string {
   return input
     .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ") // keep printable ASCII only
-    .replace(/\s+/g, " ")                      // collapse multiple spaces
+    .replace(/\s+/g, " ") // collapse multiple spaces
     .trim();
 }
 
-// 🛡️ Safe JSON parse with regex fallback
+// 🛡️ Robust JSON parse with auto-repair
 function safeParseTopics(raw: string) {
   try {
+    // Direct parse first
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
-    if (typeof parsed === "object" && parsed !== null) return [parsed];
+    return Array.isArray(parsed) ? parsed : [parsed];
   } catch {
-    // Try extracting first JSON-looking array/object
-    const match = raw.match(/(\[.*\]|\{.*\})/s);
-    if (match) {
+    // Step 1: Extract first [ ... last ]
+    const start = raw.indexOf("[");
+    const end = raw.lastIndexOf("]");
+    if (start !== -1 && end !== -1 && end > start) {
+      const sliced = raw.slice(start, end + 1);
       try {
-        const parsed = JSON.parse(match[0]);
-        if (Array.isArray(parsed)) return parsed;
-        if (typeof parsed === "object" && parsed !== null) return [parsed];
-      } catch (e) {
-        console.error("Regex-based parse still failed:", e.message);
+        const parsed = JSON.parse(sliced);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        // Step 2: Fix multiple arrays/objects concatenated
+        const fixed = sliced
+          .replace(/\]\s*\[/g, ",") // merge arrays ][
+          .replace(/}{/g, "},{"); // merge objects
+        try {
+          const parsed = JSON.parse(fixed);
+          return Array.isArray(parsed) ? parsed : [parsed];
+        } catch (e) {
+          console.error("Final JSON repair failed:", e.message);
+        }
       }
     }
-    console.error("Topic JSON parse failed. Raw snippet:", raw.slice(0, 300));
   }
+
+  console.error("Topic JSON parse failed. Raw snippet:", raw.slice(0, 300));
   return [];
 }
 
@@ -71,17 +83,25 @@ serve(async (req) => {
     const { documentId, extractedText, meta, instruction } = await req.json();
 
     if (!documentId || !extractedText) {
-      return new Response(JSON.stringify({ error: "documentId and extractedText are required" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({
+          error: "documentId and extractedText are required",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     if (!GEMINI_API_KEY) {
-      return new Response(JSON.stringify({ error: "Gemini API key not configured" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: "Gemini API key not configured" }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     // 🧹 Clean + limit notes
@@ -145,15 +165,7 @@ ${instruction ?? ""}${cautionNote}
     let topics = safeParseTopics(raw);
 
     if (topics.length === 0) {
-      topics = [
-        {
-          title: "Main Concepts",
-          content: "Key concepts identified from your notes.",
-          simplified_explanation: "The main ideas rewritten simply.",
-          real_world_example: "Example of application.",
-          keywords: ["concepts"],
-        },
-      ];
+      throw new Error("No valid topics returned from Gemini");
     }
 
     const rows = topics.map((t, i) => cleanTopic(t, i, documentId));
@@ -206,12 +218,16 @@ Return JSON ONLY:
         await supabase.from("quizzes").insert([
           {
             topic_id: topic.id,
-            question: cleanExtractedText(quiz.question || "Question unavailable"),
+            question: cleanExtractedText(
+              quiz.question || "Question unavailable"
+            ),
             options: Array.isArray(quiz.options)
               ? quiz.options.map((o: string) => cleanExtractedText(o))
               : ["A", "B", "C", "D"],
             correct_answer:
-              typeof quiz.correct_answer === "number" ? quiz.correct_answer : 0,
+              typeof quiz.correct_answer === "number"
+                ? quiz.correct_answer
+                : 0,
             explanation: cleanExtractedText(quiz.explanation || ""),
           },
         ]);
@@ -230,16 +246,23 @@ Return JSON ONLY:
       .eq("id", documentId);
 
     return new Response(
-      JSON.stringify({ success: true, topics: rows, message: "Document processed" }),
+      JSON.stringify({
+        success: true,
+        topics: rows,
+        message: "Document processed",
+      }),
       {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       }
     );
   } catch (err) {
     console.error("process-document error:", err);
-    return new Response(JSON.stringify({ error: err?.message || String(err) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: err?.message || String(err) }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   }
 });

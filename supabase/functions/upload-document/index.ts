@@ -10,6 +10,21 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type"
 };
 
+// ✅ Clean text to remove invalid Unicode sequences and control characters
+function cleanExtractedText(text: string): string {
+  return text
+    // Remove null bytes and other control characters
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    // Remove incomplete Unicode escape sequences
+    .replace(/\\u[0-9a-fA-F]{0,3}(?![0-9a-fA-F])/g, '')
+    // Clean up common PDF artifacts
+    .replace(/\\[rnt]/g, ' ')
+    .replace(/\\{2,}/g, '\\')
+    // Remove excessive whitespace
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // ✅ PDF text extraction using pdf-lib (Deno-safe, TypeScript-native)
 async function extractPdfTextWithPdfLib(arrayBuffer: ArrayBuffer) {
   try {
@@ -38,7 +53,7 @@ async function extractPdfTextWithPdfLib(arrayBuffer: ArrayBuffer) {
       }
     });
 
-    extractedText = extractedText.replace(/\s+/g, " ").trim();
+    extractedText = cleanExtractedText(extractedText);
     console.log(`📄 pdf-lib extraction complete. Length: ${extractedText.length}`);
 
     if (extractedText.length < 20) {
@@ -80,7 +95,7 @@ async function extractPdfTextManual(arrayBuffer: ArrayBuffer) {
       if (/[a-zA-Z0-9]/.test(text)) extractedText += text + " ";
     });
 
-    extractedText = extractedText.replace(/\s+/g, " ").trim();
+    extractedText = cleanExtractedText(extractedText);
     console.log(`📄 Manual extraction length: ${extractedText.length}`);
 
     if (extractedText.length < 20) {
@@ -166,7 +181,7 @@ serve(async (req) => {
     let extractionConfidence = "low";
 
     if (fileType === "text/plain") {
-      extractedText = new TextDecoder().decode(fileBuffer).trim();
+      extractedText = cleanExtractedText(new TextDecoder().decode(fileBuffer));
       extractionMethod = "text-decoder";
       extractionConfidence = extractedText.length > 200 ? "high" : "medium";
     } else if (fileType === "application/pdf") {

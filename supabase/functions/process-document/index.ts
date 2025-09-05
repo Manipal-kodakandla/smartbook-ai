@@ -21,24 +21,27 @@ function cleanExtractedText(input: string): string {
     .trim();
 }
 
-// 🛡️ Safe JSON parse + normalize
+// 🛡️ Safe JSON parse with regex fallback
 function safeParseTopics(raw: string) {
   try {
     const parsed = JSON.parse(raw);
-
-    if (Array.isArray(parsed)) {
-      return parsed;
-    }
-    if (typeof parsed === "object" && parsed !== null) {
-      return [parsed]; // wrap single object into array
-    }
-
-    console.error("Unexpected topic format:", parsed);
-    return [];
+    if (Array.isArray(parsed)) return parsed;
+    if (typeof parsed === "object" && parsed !== null) return [parsed];
   } catch {
+    // Try extracting first JSON-looking array/object
+    const match = raw.match(/(\[.*\]|\{.*\})/s);
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[0]);
+        if (Array.isArray(parsed)) return parsed;
+        if (typeof parsed === "object" && parsed !== null) return [parsed];
+      } catch (e) {
+        console.error("Regex-based parse still failed:", e.message);
+      }
+    }
     console.error("Topic JSON parse failed. Raw snippet:", raw.slice(0, 300));
-    return [];
   }
+  return [];
 }
 
 // 🧹 Clean topic object before DB insert

@@ -4,7 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type"
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
@@ -16,9 +16,22 @@ const supabase = createClient(
 // 🧹 Clean extracted text (remove binary/unicode junk)
 function cleanExtractedText(input: string): string {
   return input
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ") // keep printable ASCII, replace others with space
-    .replace(/\s+/g, " ")                      // collapse multiple spaces
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ") // keep printable ASCII
+    .replace(/\s+/g, " ") // collapse spaces
     .trim();
+}
+
+// 🛡️ Safe JSON parser (handles single objects, broken JSON)
+function safeJsonParse(raw: string, fallback: any): any {
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    if (typeof parsed === "object") return [parsed]; // wrap single object
+    return fallback;
+  } catch {
+    console.error("⚠️ JSON parse failed. Raw:", raw);
+    return fallback;
+  }
 }
 
 serve(async (req) => {
@@ -99,25 +112,19 @@ ${instruction ?? ""}${cautionNote}
     const data = await resp.json();
     const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "[]";
 
-    let topics = [];
-    try {
-      topics = JSON.parse(raw);
-      if (!Array.isArray(topics)) throw new Error("Not an array");
-    } catch {
-      console.error("Topic JSON parse failed. Raw:", raw);
-      topics = [
-        {
-          title: "Main Concepts",
-          content: "Key concepts identified from your notes.",
-          simplified_explanation: "The main ideas rewritten simply.",
-          real_world_example: "Example of application.",
-          keywords: ["concepts"]
-        }
-      ];
-    }
+    // 🛡️ Parse topics safely
+    const topics = safeJsonParse(raw, [
+      {
+        title: "Main Concepts",
+        content: "Key concepts identified from your notes.",
+        simplified_explanation: "The main ideas rewritten simply.",
+        real_world_example: "Example of application.",
+        keywords: ["concepts"]
+      }
+    ]);
 
     // Insert topics
-    const rows = topics.map((t, i) => ({
+    const rows = topics.map((t: any, i: number) => ({
       document_id: documentId,
       title: t.title || `Topic ${i + 1}`,
       content: t.content || "",
@@ -168,13 +175,8 @@ Return JSON ONLY:
         const qData = await qResp.json();
         const qRaw = qData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 
-        let quiz;
-        try {
-          quiz = JSON.parse(qRaw);
-        } catch {
-          console.error("Quiz parse failed. Raw:", qRaw);
-          continue;
-        }
+        const quiz = safeJsonParse(qRaw, null);
+        if (!quiz || !quiz.question) continue;
 
         await supabase.from("quizzes").insert([
           {
@@ -199,14 +201,15 @@ Return JSON ONLY:
       })
       .eq("id", documentId);
 
-    return new Response(JSON.stringify({ success: true, topics: rows, message: "Document processed" }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
-    });
+    return new Response(
+      JSON.stringify({ success: true, topics: rows, message: "Document processed" }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   } catch (err) {
     console.error("process-document error:", err);
-    return new Response(JSON.stringify({ error: err?.message || String(err) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
-    });
+    return new Response(
+      JSON.stringify({ error: err?.message || String(err) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });

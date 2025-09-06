@@ -4,8 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
@@ -14,244 +13,366 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
 );
 
-// 🧹 Clean extracted text (remove binary/unicode junk)
+// ---------------------- Cleaning helpers ----------------------
 function cleanExtractedText(input: string): string {
+  if (!input || typeof input !== "string") return "";
   return input
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ") // keep printable ASCII only
-    .replace(/\s+/g, " ") // collapse multiple spaces
+    // normalize smart quotes to straight quotes
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    // remove unicode line separators that break JSON
+    .replace(/[\u2028\u2029]/g, " ")
+    // remove control characters except tab/newline/carriage return
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
-// 🧹 Sanitize Gemini JSON output
-function sanitizeGeminiJson(raw: string): string {
-  return raw
-    // Remove illegal control characters
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ")
-    // Fix invalid escape sequences (allow only JSON-safe escapes)
-    .replace(/\\(?!["\\/bfnrtu])/g, "")
-    .trim();
+// Remove byte-level junk and fix common escape issues in a candidate JSON string
+function cleanCandidateForJson(candidate: string): string {
+  if (!candidate || typeof candidate !== "string") return candidate;
+
+  let s = candidate;
+
+  // Normalize quotes & newlines
+  s = s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+  s = s.replace(/[\u2028\u2029]/g, " ");
+  s = s.replace(/\r\n?/g, "\n");
+
+  // Remove binary/control chars that will break JSON.parse
+  s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ");
+
+  // Remove \xNN hex escapes (not valid JSON) and other invalid escapes
+  s = s.replace(/\\x[0-9A-Fa-f]{2}/g, "");          // remove \xNN
+  // Remove backslashes that are not followed by a valid JSON escape char
+  s = s.replace(/\\(?!["\\/bfnrtu])/g, "");         // drop stray backslash
+  // Collapse multiple spaces
+  s = s.replace(/\s+/g, " ").trim();
+
+  return s;
 }
 
-// 🛡️ Robust JSON parse with sanitization
-function safeParseTopics(raw: string) {
+// ---------------------- Balanced JSON extractor ----------------------
+function extractBalanced(raw: string, openChar: string, closeChar: string, startIdx: number) {
+  let i = startIdx;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (; i < raw.length; i++) {
+    const ch = raw[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (ch === openChar) {
+        depth++;
+      } else if (ch === closeChar) {
+        depth--;
+        if (depth === 0) {
+          return raw.slice(startIdx, i + 1);
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// Try to find JSON-like candidates (arrays/objects) inside raw text using balanced parsing
+function findJsonCandidates(raw: string) {
+  const candidates: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === "[" || ch === "{") {
+      const candidate = extractBalanced(raw, ch, ch === "[" ? "]" : "}", i);
+      if (candidate) {
+        candidates.push(candidate);
+        i += candidate.length - 1;
+      }
+    }
+  }
+  return candidates;
+}
+
+// Try a set of strategies to parse JSON from rawGeminiText
+function extractJsonFromResponse(rawResponse: string): any[] {
+  if (!rawResponse || typeof rawResponse !== "string") return [];
+
+  // 1) Direct parse
   try {
-    const cleanRaw = sanitizeGeminiJson(raw);
-    const parsed = JSON.parse(cleanRaw);
+    const parsed = JSON.parse(rawResponse);
     return Array.isArray(parsed) ? parsed : [parsed];
   } catch (e) {
-    console.error("❌ JSON parse failed:", e.message);
-    console.error("Raw snippet:", raw.slice(0, 300));
-    return [];
+    // continue to attempts
   }
+
+  // 2) Markdown JSON code block extraction
+  const codeBlockMatch = rawResponse.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (codeBlockMatch?.[1]) {
+    const candidate = cleanCandidateForJson(codeBlockMatch[1]);
+    try {
+      const parsed = JSON.parse(candidate);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      // fallthrough
+    }
+  }
+
+  // 3) Balanced extraction: find JSON array/object substrings
+  const candidates = findJsonCandidates(rawResponse);
+  for (const cand of candidates) {
+    const cleaned = cleanCandidateForJson(cand);
+    try {
+      const parsed = JSON.parse(cleaned);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      // Try a secondary repair: merge concatenated arrays/objects
+      let repaired = cleaned.replace(/\]\s*\[/g, ",").replace(/}\s*{/g, "},{");
+      try {
+        const parsed2 = JSON.parse(repaired);
+        return Array.isArray(parsed2) ? parsed2 : [parsed2];
+      } catch (e2) {
+        // continue to next candidate
+      }
+    }
+  }
+
+  // 4) Last-ditch: find first bracketed block via regex and try parse (greedy)
+  const arrayMatch = rawResponse.match(/\[[\s\S]*\]/);
+  if (arrayMatch?.[0]) {
+    const cleaned = cleanCandidateForJson(arrayMatch[0]);
+    try {
+      const parsed = JSON.parse(cleaned);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {}
+  }
+
+  const objMatch = rawResponse.match(/\{[\s\S]*\}/);
+  if (objMatch?.[0]) {
+    const cleaned = cleanCandidateForJson(objMatch[0]);
+    try {
+      const parsed = JSON.parse(cleaned);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {}
+  }
+
+  console.error("❌ Could not extract valid JSON from Gemini response. Raw snippet:", rawResponse.slice(0, 400));
+  return [];
 }
 
-// 🧹 Clean topic object before DB insert
-function cleanTopic(t: any, i: number, documentId: string) {
-  const clean = (val: string) =>
-    typeof val === "string" ? cleanExtractedText(val) : "";
+// ---------------------- Validation & DB helpers ----------------------
+function validateAndCleanTopic(topic: any, index: number, documentId: string) {
+  if (!topic || typeof topic !== "object") return null;
+
+  const cleanField = (v: any, fallback = "") => {
+    if (typeof v !== "string") return fallback;
+    const cleaned = cleanExtractedText(v);
+    return cleaned || fallback;
+  };
+
+  const cleanKeywords = (k: any) => {
+    if (!Array.isArray(k)) return ["general"];
+    const ks = k.map((x: any) => cleanField(String(x))).filter(Boolean).slice(0, 6);
+    return ks.length ? ks : ["general"];
+  };
 
   return {
     document_id: documentId,
-    title: clean(t.title) || `Topic ${i + 1}`,
-    content: clean(t.content),
-    simplified_explanation: clean(t.simplified_explanation),
-    real_world_example: clean(t.real_world_example),
-    keywords: Array.isArray(t.keywords)
-      ? t.keywords.map((k: any) => clean(String(k))).filter(Boolean)
-      : ["general"],
-    topic_order: i,
+    title: cleanField(topic.title, `Topic ${index + 1}`).slice(0, 120),
+    content: cleanField(topic.content, "Content unclear from source").slice(0, 4000),
+    simplified_explanation: cleanField(topic.simplified_explanation, "").slice(0, 2000),
+    real_world_example: cleanField(topic.real_world_example, "").slice(0, 2000),
+    keywords: cleanKeywords(topic.keywords),
+    topic_order: index,
   };
 }
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+// ---------------------- Gemini call + retry ----------------------
+async function callGemini(prompt: string) {
+  const resp = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { response_mime_type: "application/json" },
+      }),
+    }
+  );
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(`Gemini API error ${resp.status}: ${t}`);
+  }
+  return await resp.json();
+}
+
+async function generateTopicsWithRetry(notes: string, meta: any, instruction?: string, maxRetries = 3) {
+  const confidence = meta?.extractionConfidence ?? "unknown";
+  let cautionNote = "";
+  if (confidence === "low") {
+    cautionNote = "\n⚠️ WARNING: Extracted text may be incomplete or messy. If unsure, use 'Content unclear from source'.";
   }
 
-  try {
-    const { documentId, extractedText, meta, instruction } = await req.json();
+  const basePrompt = `You are an AI that converts study notes into structured topics.
 
-    if (!documentId || !extractedText) {
-      return new Response(
-        JSON.stringify({
-          error: "documentId and extractedText are required",
-        }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    if (!GEMINI_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: "Gemini API key not configured" }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    // 🧹 Clean + limit notes
-    const cleaned = cleanExtractedText(extractedText);
-    const notes = cleaned.slice(0, 80_000);
-
-    // Confidence guardrails
-    const confidence = meta?.extractionConfidence ?? "unknown";
-    let cautionNote = "";
-    if (confidence === "low") {
-      cautionNote =
-        "\n⚠️ WARNING: Extracted text may be incomplete or messy. Be cautious in summarizing. If unsure, state 'uncertain'.";
-    }
-
-    // === Prompt for Gemini ===
-    const systemPrompt = `
-You are converting raw study notes into structured learning topics.
-
-RULES:
-- Use ONLY the text in NOTES below.
-- Do not invent facts outside NOTES.
-- Ignore formatting/typos.
-- If content looks incomplete, explicitly mention uncertainty.
-- Output valid JSON (no markdown), array of 3–5 objects:
-  [{ "title": "...", "content": "...", "simplified_explanation": "...", "real_world_example": "...", "keywords": ["..."] }]
-- If you only produce one object, still wrap it in an array.
-- "title" <= 50 chars.
-- "keywords" = 3–6 terms.
+STRICT RULES:
+1) Output ONLY valid JSON (array) - no markdown, no commentary.
+2) Return an array of 2-5 topic objects.
+3) Use ONLY information in NOTES below.
+4) Each object must have: title, content, simplified_explanation, real_world_example, keywords (array).
+5) If content is unclear, set content to "Content unclear from source".
 
 NOTES:
 ${notes}
 
-Extra meta:
-- Extraction method: ${meta?.extractionMethod ?? "unknown"}
-- Confidence: ${confidence}
-
+Metadata: ${meta?.extractionMethod ?? "unknown"} extraction, confidence: ${confidence}
 ${instruction ?? ""}${cautionNote}
-`.trim();
+`;
 
-    // === Gemini API call ===
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: systemPrompt }] }],
-          generationConfig: { response_mime_type: "application/json" },
-        }),
+  let lastErr: any = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`🔄 Gemini attempt ${attempt}`);
+      const data = await callGemini(basePrompt);
+      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!raw) {
+        lastErr = new Error("Gemini returned no text content");
+        continue;
       }
-    );
-
-    if (!resp.ok) {
-      throw new Error(`Gemini API error ${resp.status}: ${await resp.text()}`);
+      console.log("Raw Gemini preview:", raw.slice(0, 200));
+      const topics = extractJsonFromResponse(raw);
+      if (topics && topics.length > 0) return topics;
+      lastErr = new Error("Could not extract valid JSON topics from Gemini output");
+    } catch (e) {
+      console.error("Gemini call failed:", e?.message ?? e);
+      lastErr = e;
+      // exponential backoff
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
     }
+  }
+  throw lastErr ?? new Error("Gemini failed to produce topics");
+}
 
-    const data = await resp.json();
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "[]";
+// ---------------------- Quiz generation ----------------------
+async function generateQuizForTopic(topic: any) {
+  try {
+    const prompt = `Create one multiple-choice question from this topic. Return ONLY valid JSON.
 
-    // 🛡️ Parse and normalize topics
-    let topics = safeParseTopics(raw);
-
-    if (topics.length === 0) {
-      throw new Error("No valid topics returned from Gemini");
-    }
-
-    const rows = topics.map((t, i) => cleanTopic(t, i, documentId));
-
-    // Insert topics into DB
-    const { data: stored, error: insertErr } = await supabase
-      .from("topics")
-      .insert(rows)
-      .select();
-
-    if (insertErr) throw new Error(`Insert topics failed: ${insertErr.message}`);
-
-    // === Generate quizzes per topic ===
-    for (const topic of stored ?? []) {
-      const qPrompt = `
-Make ONE multiple-choice question strictly from this topic.
-
-TITLE: ${topic.title}
+TOPIC_TITLE: ${topic.title}
 CONTENT: ${topic.content}
-SIMPLE: ${topic.simplified_explanation}
+EXPLANATION: ${topic.simplified_explanation}
 
-Return JSON ONLY:
+Return:
 {"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"..."}
-`.trim();
+`;
+    const data = await callGemini(prompt);
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!raw) return null;
+    const qlist = extractJsonFromResponse(raw);
+    const q = qlist[0];
+    if (!q || !q.question) return null;
+    // Normalize quiz
+    return {
+      topic_id: topic.id,
+      question: cleanExtractedText(q.question).slice(0, 500),
+      options: Array.isArray(q.options) ? q.options.slice(0, 4).map((o: any) => cleanExtractedText(String(o)).slice(0, 200)) : ["A", "B", "C", "D"],
+      correct_answer: typeof q.correct_answer === "number" && q.correct_answer >= 0 && q.correct_answer <= 3 ? q.correct_answer : 0,
+      explanation: cleanExtractedText(q.explanation || "").slice(0, 400),
+    };
+  } catch (e) {
+    console.error("Quiz generation error:", e?.message ?? e);
+    return null;
+  }
+}
 
-      try {
-        const qResp = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: qPrompt }] }],
-              generationConfig: { response_mime_type: "application/json" },
-            }),
+// ---------------------- Main handler ----------------------
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch (e) {
+    return new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
+  const { documentId, extractedText, meta, instruction } = body ?? {};
+
+  try {
+    if (!documentId) return new Response(JSON.stringify({ error: "documentId is required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (!extractedText || typeof extractedText !== "string" || extractedText.trim().length === 0) {
+      return new Response(JSON.stringify({ error: "Valid extractedText is required" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    if (!GEMINI_API_KEY) return new Response(JSON.stringify({ error: "Gemini API key not configured" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
+    // mark processing
+    await supabase.from("documents").update({ processing_status: "processing" }).eq("id", documentId);
+
+    const cleanedText = cleanExtractedText(extractedText).slice(0, 80_000);
+    if (cleanedText.length < 10) throw new Error("Extracted text too short after cleaning");
+
+    // Get topics from Gemini
+    const rawTopics = await generateTopicsWithRetry(cleanedText, meta ?? {}, instruction ?? "", 3);
+
+    if (!rawTopics || rawTopics.length === 0) throw new Error("No valid topics returned from Gemini");
+
+    // Validate & clean topics then insert
+    const validTopics = rawTopics.map((t: any, i: number) => validateAndCleanTopic(t, i, documentId)).filter(Boolean);
+
+    if (validTopics.length === 0) throw new Error("No valid topics after validation");
+
+    const { data: insertedTopics, error: insertError } = await supabase.from("topics").insert(validTopics).select();
+    if (insertError) throw new Error(`DB insert topics failed: ${insertError.message}`);
+
+    // Generate quizzes for inserted topics
+    let quizzesCreated = 0;
+    if (insertedTopics) {
+      for (const t of insertedTopics) {
+        try {
+          const quiz = await generateQuizForTopic(t);
+          if (quiz) {
+            const { error: quizErr } = await supabase.from("quizzes").insert([quiz]);
+            if (!quizErr) quizzesCreated++;
+            else console.error("Quiz insert error:", quizErr);
           }
-        );
-
-        if (!qResp.ok) {
-          console.error("Quiz gen error:", await qResp.text());
-          continue;
+        } catch (e) {
+          console.error("Quiz loop error:", e);
         }
-
-        const qData = await qResp.json();
-        const qRaw = qData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
-
-        const quiz = safeParseTopics(qRaw)[0] ?? null;
-        if (!quiz) continue;
-
-        await supabase.from("quizzes").insert([
-          {
-            topic_id: topic.id,
-            question: cleanExtractedText(
-              quiz.question || "Question unavailable"
-            ),
-            options: Array.isArray(quiz.options)
-              ? quiz.options.map((o: string) => cleanExtractedText(o))
-              : ["A", "B", "C", "D"],
-            correct_answer:
-              typeof quiz.correct_answer === "number"
-                ? quiz.correct_answer
-                : 0,
-            explanation: cleanExtractedText(quiz.explanation || ""),
-          },
-        ]);
-      } catch (e) {
-        console.error("Quiz generation failed:", e);
       }
     }
 
-    // Mark document completed
-    await supabase
-      .from("documents")
-      .update({
-        processing_status: "completed",
-        processed_at: new Date().toISOString(),
-      })
-      .eq("id", documentId);
+    // mark completed
+    await supabase.from("documents").update({ processing_status: "completed", processed_at: new Date().toISOString() }).eq("id", documentId);
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        topics: rows,
-        message: "Document processed",
-      }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    return new Response(JSON.stringify({ success: true, topics: validTopics, quizzesCreated, message: `Processed ${validTopics.length} topics` }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
   } catch (err) {
-    console.error("process-document error:", err);
-    return new Response(
-      JSON.stringify({ error: err?.message || String(err) }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+    console.error("❌ Document processing failed:", err?.message ?? err);
+
+    // try update doc to failed
+    try {
+      if (documentId) {
+        await supabase.from("documents").update({ processing_status: "failed", processed_at: new Date().toISOString() }).eq("id", documentId);
       }
-    );
+    } catch (uErr) {
+      console.error("Failed to mark document failed:", uErr);
+    }
+
+    return new Response(JSON.stringify({ error: err?.message || String(err), details: "See logs for raw Gemini output." }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });

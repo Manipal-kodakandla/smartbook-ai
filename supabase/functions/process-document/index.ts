@@ -4,8 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
@@ -17,49 +16,28 @@ const supabase = createClient(
 // 🧹 Clean extracted text (remove binary/unicode junk)
 function cleanExtractedText(input: string): string {
   return input
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ") // keep printable ASCII only
-    .replace(/\s+/g, " ") // collapse multiple spaces
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
-// 🛡️ Robust JSON parse with auto-repair
+// 🛡️ Strict JSON parse only
 function safeParseTopics(raw: string) {
   try {
-    // Direct parse first
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch {
-    // Step 1: Extract first [ ... last ]
-    const start = raw.indexOf("[");
-    const end = raw.lastIndexOf("]");
-    if (start !== -1 && end !== -1 && end > start) {
-      const sliced = raw.slice(start, end + 1);
-      try {
-        const parsed = JSON.parse(sliced);
-        return Array.isArray(parsed) ? parsed : [parsed];
-      } catch {
-        // Step 2: Fix multiple arrays/objects concatenated
-        const fixed = sliced
-          .replace(/\]\s*\[/g, ",") // merge arrays ][
-          .replace(/}{/g, "},{"); // merge objects
-        try {
-          const parsed = JSON.parse(fixed);
-          return Array.isArray(parsed) ? parsed : [parsed];
-        } catch (e) {
-          console.error("Final JSON repair failed:", e.message);
-        }
-      }
-    }
+    if (Array.isArray(parsed)) return parsed;
+    if (typeof parsed === "object" && parsed !== null) return [parsed];
+    return [];
+  } catch (e) {
+    console.error("❌ JSON parse failed:", e.message);
+    console.error("Raw snippet:", raw.slice(0, 300));
+    return [];
   }
-
-  console.error("Topic JSON parse failed. Raw snippet:", raw.slice(0, 300));
-  return [];
 }
 
-// 🧹 Clean topic object before DB insert
+// 🧹 Clean topic before DB insert
 function cleanTopic(t: any, i: number, documentId: string) {
-  const clean = (val: string) =>
-    typeof val === "string" ? cleanExtractedText(val) : "";
+  const clean = (val: string) => (typeof val === "string" ? cleanExtractedText(val) : "");
 
   return {
     document_id: documentId,
@@ -84,64 +62,61 @@ serve(async (req) => {
 
     if (!documentId || !extractedText) {
       return new Response(
-        JSON.stringify({
-          error: "documentId and extractedText are required",
-        }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
+        JSON.stringify({ error: "documentId and extractedText are required" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     if (!GEMINI_API_KEY) {
       return new Response(
         JSON.stringify({ error: "Gemini API key not configured" }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // 🧹 Clean + limit notes
+    // Clean + limit notes
     const cleaned = cleanExtractedText(extractedText);
     const notes = cleaned.slice(0, 80_000);
 
-    // Confidence guardrails
     const confidence = meta?.extractionConfidence ?? "unknown";
     let cautionNote = "";
     if (confidence === "low") {
-      cautionNote =
-        "\n⚠️ WARNING: Extracted text may be incomplete or messy. Be cautious in summarizing. If unsure, state 'uncertain'.";
+      cautionNote = "\n⚠️ WARNING: Extracted text may be incomplete or messy. State 'uncertain' if unsure.";
     }
 
-    // === Prompt for Gemini ===
+    // === Strict JSON prompt ===
     const systemPrompt = `
 You are converting raw study notes into structured learning topics.
 
 RULES:
-- Use ONLY the text in NOTES below.
-- Do not invent facts outside NOTES.
+- Use ONLY the text in NOTES.
+- Do not invent facts.
 - Ignore formatting/typos.
-- If content looks incomplete, explicitly mention uncertainty.
-- Output valid JSON (no markdown), array of 3–5 objects:
-  [{ "title": "...", "content": "...", "simplified_explanation": "...", "real_world_example": "...", "keywords": ["..."] }]
-- If you only produce one object, still wrap it in an array.
-- "title" <= 50 chars.
-- "keywords" = 3–6 terms.
+- Output STRICT JSON ONLY (no markdown, no extra text).
+- Must be an array of 3–5 objects like:
+[
+  {
+    "title": "...",
+    "content": "...",
+    "simplified_explanation": "...",
+    "real_world_example": "...",
+    "keywords": ["...", "..."]
+  }
+]
+- No code blocks, no commentary, only JSON.
+- If you cannot generate, return [].
 
 NOTES:
 ${notes}
 
-Extra meta:
+Meta:
 - Extraction method: ${meta?.extractionMethod ?? "unknown"}
 - Confidence: ${confidence}
 
 ${instruction ?? ""}${cautionNote}
 `.trim();
 
-    // === Gemini API call ===
+    // === Gemini call ===
     const resp = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
       {
@@ -154,31 +129,20 @@ ${instruction ?? ""}${cautionNote}
       }
     );
 
-    if (!resp.ok) {
-      throw new Error(`Gemini API error ${resp.status}: ${await resp.text()}`);
-    }
+    if (!resp.ok) throw new Error(`Gemini API error ${resp.status}: ${await resp.text()}`);
 
     const data = await resp.json();
     const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "[]";
 
-    // 🛡️ Parse and normalize topics
-    let topics = safeParseTopics(raw);
-
-    if (topics.length === 0) {
-      throw new Error("No valid topics returned from Gemini");
-    }
+    const topics = safeParseTopics(raw);
+    if (topics.length === 0) throw new Error("No valid topics returned from Gemini");
 
     const rows = topics.map((t, i) => cleanTopic(t, i, documentId));
 
-    // Insert topics into DB
-    const { data: stored, error: insertErr } = await supabase
-      .from("topics")
-      .insert(rows)
-      .select();
-
+    const { data: stored, error: insertErr } = await supabase.from("topics").insert(rows).select();
     if (insertErr) throw new Error(`Insert topics failed: ${insertErr.message}`);
 
-    // === Generate quizzes per topic ===
+    // Quizzes
     for (const topic of stored ?? []) {
       const qPrompt = `
 Make ONE multiple-choice question strictly from this topic.
@@ -218,16 +182,11 @@ Return JSON ONLY:
         await supabase.from("quizzes").insert([
           {
             topic_id: topic.id,
-            question: cleanExtractedText(
-              quiz.question || "Question unavailable"
-            ),
+            question: cleanExtractedText(quiz.question || "Question unavailable"),
             options: Array.isArray(quiz.options)
               ? quiz.options.map((o: string) => cleanExtractedText(o))
               : ["A", "B", "C", "D"],
-            correct_answer:
-              typeof quiz.correct_answer === "number"
-                ? quiz.correct_answer
-                : 0,
+            correct_answer: typeof quiz.correct_answer === "number" ? quiz.correct_answer : 0,
             explanation: cleanExtractedText(quiz.explanation || ""),
           },
         ]);
@@ -236,33 +195,20 @@ Return JSON ONLY:
       }
     }
 
-    // Mark document completed
-    await supabase
-      .from("documents")
-      .update({
-        processing_status: "completed",
-        processed_at: new Date().toISOString(),
-      })
+    await supabase.from("documents")
+      .update({ processing_status: "completed", processed_at: new Date().toISOString() })
       .eq("id", documentId);
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        topics: rows,
-        message: "Document processed",
-      }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      JSON.stringify({ success: true, topics: rows, message: "Document processed" }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
+
   } catch (err) {
     console.error("process-document error:", err);
     return new Response(
       JSON.stringify({ error: err?.message || String(err) }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });

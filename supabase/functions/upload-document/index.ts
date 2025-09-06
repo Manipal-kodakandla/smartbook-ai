@@ -39,6 +39,7 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
     });
 
     extractedText = cleanExtractedText(extractedText);
+
     return {
       text: extractedText || "[PDF_LIB_MINIMAL] Minimal text found",
       method: "pdf-lib",
@@ -73,12 +74,11 @@ serve(async (req) => {
 
     // 🔍 Auto-detect content type
     const contentType = req.headers.get("content-type") || "";
-
     if (contentType.includes("multipart/form-data")) {
       // ✅ Handle FormData upload
       const formData = await req.formData();
-      const file = formData.get("file") as File;
-      userId = formData.get("userId") as string;
+      const file = formData.get("file") as File | null;
+      userId = formData.get("userId") as string | null;
 
       if (!file || !userId) {
         return new Response(JSON.stringify({ error: "File and userId are required" }), {
@@ -118,9 +118,7 @@ serve(async (req) => {
     // ✅ Upload to Supabase Storage
     const { error: storageError } = await supabase.storage
       .from("documents")
-      .upload(`${userId}/${fileName}`, new Blob([fileBuffer], { type: fileType }), {
-        upsert: true,
-      });
+      .upload(`${userId}/${fileName}`, new Blob([fileBuffer], { type: fileType }), { upsert: true });
 
     if (storageError) {
       console.error("⚠️ Storage upload failed:", storageError);
@@ -172,48 +170,65 @@ serve(async (req) => {
     console.log(`✅ Document saved: ${document.id}`);
 
     // ✅ Trigger AI function if enough text
-    console.log(`📊 Text analysis: length=${extractedText.length}, status=${extractionStatus}, starts_with_bracket=${extractedText.startsWith("[")}`);
     const hasUsefulText =
-      extractedText.length > 50 &&
-      extractionStatus === "success" &&
-      !extractedText.startsWith("[");
+      extractedText.length > 50 && extractionStatus === "success" && !extractedText.startsWith("[");
     console.log(`🔍 Has useful text: ${hasUsefulText}`);
+
     if (hasUsefulText) {
       console.log("🤖 Invoking AI processing...");
       try {
-        console.log("📤 Calling process-document function with documentId:", document.id);
-        const { data: processResult, error: processError } = await supabase.functions.invoke("process-document", {
-          body: {
-            documentId: document.id,
-            extractedText: extractedText.slice(0, 120_000),
-            meta: { fileName, fileType, extractionMethod, extractionStatus, extractionConfidence },
-            instruction:
-              "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, say so clearly.",
-          },
-        });
-        
+        console.log("📤 Calling process-document with documentId:", document.id);
+
+        const { data: processResult, error: processError } = await supabase.functions.invoke(
+          "process-document",
+          {
+            body: JSON.stringify({
+              documentId: document.id,
+              extractedText: extractedText.slice(0, 120_000),
+              meta: {
+                fileName,
+                fileType,
+                extractionMethod,
+                extractionStatus,
+                extractionConfidence,
+              },
+              instruction:
+                "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, say so clearly.",
+            }),
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+
         if (processError) {
-          console.error("❌ Process document function error:", processError);
-          // Update status to failed if processing fails
+          console.error("❌ Process-document error:", processError);
           await supabase
             .from("documents")
-            .update({ processing_status: "failed", processed_at: new Date().toISOString() })
+            .update({
+              processing_status: "failed",
+              processed_at: new Date().toISOString(),
+            })
             .eq("id", document.id);
         } else {
-          console.log("✅ Process document function succeeded:", processResult);
+          console.log("✅ Process-document succeeded:", processResult);
         }
       } catch (error) {
-        console.error("❌ Failed to invoke process-document function:", error);
+        console.error("❌ Failed to invoke process-document:", error);
         await supabase
           .from("documents")
-          .update({ processing_status: "failed", processed_at: new Date().toISOString() })
+          .update({
+            processing_status: "failed",
+            processed_at: new Date().toISOString(),
+          })
           .eq("id", document.id);
       }
     } else {
       console.log("⏭️ Skipping AI processing - insufficient useful text");
       await supabase
         .from("documents")
-        .update({ processing_status: "completed", processed_at: new Date().toISOString() })
+        .update({
+          processing_status: "completed",
+          processed_at: new Date().toISOString(),
+        })
         .eq("id", document.id);
     }
 
@@ -221,12 +236,18 @@ serve(async (req) => {
       JSON.stringify({
         success: true,
         document,
-        extraction: { status: extractionStatus, method: extractionMethod, confidence: extractionConfidence },
+        extraction: {
+          status: extractionStatus,
+          method: extractionMethod,
+          confidence: extractionConfidence,
+        },
         message: hasUsefulText
           ? `✅ Extracted with ${extractionMethod} (confidence: ${extractionConfidence}). AI started.`
           : `📄 Uploaded but insufficient text (status: ${extractionStatus}).`,
       }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
     );
   } catch (error) {
     console.error("💥 Global error:", error);

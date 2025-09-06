@@ -172,13 +172,16 @@ serve(async (req) => {
     console.log(`✅ Document saved: ${document.id}`);
 
     // ✅ Trigger AI function if enough text
+    console.log(`📊 Text analysis: length=${extractedText.length}, status=${extractionStatus}, starts_with_bracket=${extractedText.startsWith("[")}`);
     const hasUsefulText =
       extractedText.length > 50 &&
       extractionStatus === "success" &&
       !extractedText.startsWith("[");
+    console.log(`🔍 Has useful text: ${hasUsefulText}`);
     if (hasUsefulText) {
       console.log("🤖 Invoking AI processing...");
       try {
+        console.log("📤 Calling process-document function with documentId:", document.id);
         const { data: processResult, error: processError } = await supabase.functions.invoke("process-document", {
           body: {
             documentId: document.id,
@@ -207,6 +210,7 @@ serve(async (req) => {
           .eq("id", document.id);
       }
     } else {
+      console.log("⏭️ Skipping AI processing - insufficient useful text");
       await supabase
         .from("documents")
         .update({ processing_status: "completed", processed_at: new Date().toISOString() })

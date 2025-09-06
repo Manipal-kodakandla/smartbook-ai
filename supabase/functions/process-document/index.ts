@@ -29,7 +29,7 @@ function cleanExtractedText(input: string): string {
 function looksLikeGibberish(text: string): boolean {
   if (!text) return true;
   const letters = text.match(/[a-zA-Z]/g) || [];
-  return letters.length < 20; // too few real words
+  return letters.length < 20;
 }
 
 // 🔧 Try to extract JSON from Gemini response
@@ -116,6 +116,7 @@ ${instruction || ""}`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      console.log(`🤖 Attempt ${attempt}: Calling Gemini API...`);
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
         {
@@ -133,17 +134,22 @@ ${instruction || ""}`;
       );
 
       if (!response.ok) {
-        console.error("Gemini error:", await response.text());
+        const errorText = await response.text();
+        console.error(`❌ Gemini error (${response.status}):`, errorText);
         continue;
       }
 
       const data = await response.json();
       const rawContent = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      console.log("📥 Gemini response received, parsing...");
 
       const topics = extractJsonFromResponse(rawContent);
-      if (topics.length > 0) return topics;
+      if (topics.length > 0) {
+        console.log(`✅ Successfully parsed ${topics.length} topics`);
+        return topics;
+      }
     } catch (err) {
-      console.error(`Retry ${attempt} failed:`, err.message);
+      console.error(`❌ Retry ${attempt} failed:`, err.message);
     }
     await new Promise((r) => setTimeout(r, attempt * 1000));
   }
@@ -155,8 +161,12 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
+    console.log("📥 Process document request received");
     const body = await req.json();
     const { documentId, extractedText, meta, instruction } = body;
+
+    console.log(`📄 Processing document ID: ${documentId}`);
+    console.log(`📊 Text length: ${extractedText?.length || 0} characters`);
 
     if (!documentId) {
       return new Response(JSON.stringify({ error: "documentId required" }), {
@@ -166,23 +176,29 @@ serve(async (req) => {
     }
 
     if (!extractedText || looksLikeGibberish(extractedText)) {
+      console.error("❌ Text looks like gibberish or is empty");
       throw new Error("Extracted text looks like gibberish or is empty");
     }
 
+    console.log("📝 Updating document status to processing...");
     await supabase.from("documents").update({ processing_status: "processing" }).eq("id", documentId);
 
     const cleanedText = cleanExtractedText(extractedText).slice(0, 50000);
     if (cleanedText.length < 10) throw new Error("Too little usable text");
 
+    console.log(`🧹 Cleaned text length: ${cleanedText.length} characters`);
+
     const rawTopics = await generateTopicsWithRetry(cleanedText, meta, instruction);
     if (rawTopics.length === 0) throw new Error("No valid topics from Gemini");
 
+    console.log("🔧 Validating and cleaning topics...");
     const validTopics = rawTopics
       .map((t, i) => validateAndCleanTopic(t, i, documentId))
       .filter((t) => t !== null);
 
     if (validTopics.length === 0) throw new Error("No valid topics after cleaning");
 
+    console.log(`💾 Inserting ${validTopics.length} topics into database...`);
     const { data: inserted, error: insertErr } = await supabase
       .from("topics")
       .insert(validTopics)
@@ -190,10 +206,13 @@ serve(async (req) => {
 
     if (insertErr) throw new Error(`Failed to insert topics: ${insertErr.message}`);
 
+    console.log("✅ Updating document status to completed...");
     await supabase.from("documents").update({
       processing_status: "completed",
       processed_at: new Date().toISOString(),
     }).eq("id", documentId);
+
+    console.log(`🎉 Successfully processed ${validTopics.length} topics for document ${documentId}`);
 
     return new Response(
       JSON.stringify({
@@ -205,6 +224,21 @@ serve(async (req) => {
     );
   } catch (err) {
     console.error("❌ Process failed:", err.message);
+    
+    // Try to update document status to failed if we have the documentId
+    try {
+      const body = await req.clone().json();
+      if (body.documentId) {
+        console.log("📝 Updating document status to failed...");
+        await supabase.from("documents").update({
+          processing_status: "failed",
+          processed_at: new Date().toISOString(),
+        }).eq("id", body.documentId);
+      }
+    } catch (e) {
+      console.error("Failed to update document status:", e);
+    }
+
     return new Response(
       JSON.stringify({ error: err.message || String(err) }),
       { status: 500, headers: corsHeaders }

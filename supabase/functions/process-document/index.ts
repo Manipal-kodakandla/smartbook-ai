@@ -14,55 +14,33 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
 );
 
-// 🧹 Aggressively clean extracted text
+// 🧹 Clean extracted text
 function cleanExtractedText(input: string): string {
-  if (!input || typeof input !== 'string') return '';
-  
+  if (!input || typeof input !== "string") return "";
+
   return input
-    // Remove control characters except tab, newline, carriage return
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, ' ')
-    // Remove non-printable Unicode characters
-    .replace(/[\u0000-\u001F\u007F-\u009F\u00AD\u0600-\u0604\u061C\u06DD\u070F]/g, ' ')
-    // Remove problematic characters that break JSON
-    .replace(/[\u2028\u2029]/g, ' ')
-    // Replace multiple whitespace with single space
-    .replace(/\s+/g, ' ')
-    // Remove leading/trailing whitespace
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, " ")
+    .replace(/[\u0000-\u001F\u007F-\u009F\u00AD\u0600-\u0604\u061C\u06DD\u070F]/g, " ")
+    .replace(/[\u2028\u2029]/g, " ")
+    .replace(/\s+/g, " ")
     .trim()
-    // Limit length
     .slice(0, 10000);
 }
 
-// 🛡️ Ultra-robust JSON cleaning
-function sanitizeForJson(text: string): string {
-  if (!text) return '';
-  
-  return text
-    // Remove null bytes and other problematic characters
-    .replace(/\0/g, '')
-    // Fix common escape sequence issues
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t')
-    // Remove any remaining control characters
-    .replace(/[\x00-\x1F\x7F]/g, ' ')
-    .trim();
-}
-
-// 🔧 Extract JSON from Gemini response with multiple fallbacks
+// 🔧 Extract JSON from Gemini response with repair mode
 function extractJsonFromResponse(rawResponse: string): any[] {
   if (!rawResponse) return [];
 
-  // Method 1: Direct parse
+  // Try direct parse
   try {
     const parsed = JSON.parse(rawResponse);
     return Array.isArray(parsed) ? parsed : [parsed];
   } catch {}
 
-  // Method 2: Extract JSON from markdown code blocks
-  const codeBlockMatch = rawResponse.match(/```(?:json)?\s*(\[[\s\S]*?\]|\{[\s\S]*?\})\s*```/);
+  // Try markdown code blocks
+  const codeBlockMatch = rawResponse.match(
+    /```(?:json)?\s*(\[[\s\S]*?\]|\{[\s\S]*?\})\s*```/
+  );
   if (codeBlockMatch) {
     try {
       const parsed = JSON.parse(codeBlockMatch[1]);
@@ -70,7 +48,7 @@ function extractJsonFromResponse(rawResponse: string): any[] {
     } catch {}
   }
 
-  // Method 3: Find JSON array or object patterns
+  // Try array slice
   const jsonArrayMatch = rawResponse.match(/\[[\s\S]*\]/);
   if (jsonArrayMatch) {
     try {
@@ -79,12 +57,40 @@ function extractJsonFromResponse(rawResponse: string): any[] {
     } catch {}
   }
 
+  // Try object slice
   const jsonObjectMatch = rawResponse.match(/\{[\s\S]*\}/);
   if (jsonObjectMatch) {
     try {
       const parsed = JSON.parse(jsonObjectMatch[0]);
       return [parsed];
     } catch {}
+  }
+
+  // Repair mode
+  function tryRepairJson(raw: string): any[] {
+    let candidate = raw.trim();
+
+    // Balance brackets
+    const opens = (candidate.match(/\[/g) || []).length;
+    const closes = (candidate.match(/\]/g) || []).length;
+    if (opens > closes) candidate += "]".repeat(opens - closes);
+
+    const objOpens = (candidate.match(/{/g) || []).length;
+    const objCloses = (candidate.match(/}/g) || []).length;
+    if (objOpens > objCloses) candidate += "}".repeat(objOpens - objCloses);
+
+    try {
+      const parsed = JSON.parse(candidate);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return [];
+    }
+  }
+
+  const repaired = tryRepairJson(rawResponse);
+  if (repaired.length > 0) {
+    console.warn("⚠️ Used repair mode to fix JSON");
+    return repaired;
   }
 
   console.error("❌ Could not extract valid JSON from response");
@@ -94,53 +100,60 @@ function extractJsonFromResponse(rawResponse: string): any[] {
 
 // 🧹 Validate and clean topic object
 function validateAndCleanTopic(topic: any, index: number, documentId: string) {
-  if (!topic || typeof topic !== 'object') {
-    return null;
-  }
+  if (!topic || typeof topic !== "object") return null;
 
-  const cleanField = (value: any, fallback = ''): string => {
-    if (typeof value !== 'string') return fallback;
-    return cleanExtractedText(value) || fallback;
-  };
+  const cleanField = (val: any, fallback = "") =>
+    typeof val === "string" ? cleanExtractedText(val) || fallback : fallback;
 
-  const cleanKeywords = (keywords: any): string[] => {
+  const cleanKeywords = (keywords: any) => {
     if (Array.isArray(keywords)) {
       const cleaned = keywords
-        .map(k => cleanField(String(k)))
-        .filter(k => k.length > 0 && k.length < 50);
-      return cleaned.length > 0 ? cleaned.slice(0, 6) : ['general'];
+        .map((k) => cleanField(String(k)))
+        .filter((k) => k.length > 0 && k.length < 50);
+      return cleaned.length > 0 ? cleaned.slice(0, 6) : ["general"];
     }
-    return ['general'];
+    return ["general"];
   };
 
   return {
     document_id: documentId,
     title: cleanField(topic.title, `Topic ${index + 1}`).slice(0, 100),
-    content: cleanField(topic.content, 'Content not available').slice(0, 2000),
-    simplified_explanation: cleanField(topic.simplified_explanation, '').slice(0, 1000),
-    real_world_example: cleanField(topic.real_world_example, '').slice(0, 1000),
+    content: cleanField(topic.content, "Content not available").slice(0, 2000),
+    simplified_explanation: cleanField(topic.simplified_explanation, "").slice(0, 1000),
+    real_world_example: cleanField(topic.real_world_example, "").slice(0, 1000),
     keywords: cleanKeywords(topic.keywords),
     topic_order: index,
   };
 }
 
-rld_example, keywords
-5. If content is unclear or garbled, use "Content unclear from source" for that field
-6. Keep titles under 80 characters
-7. Keywords should be 3-5 relevant terms as an array
+// 🎯 Generate topics with retry
+async function generateTopicsWithRetry(notes: string, meta: any, instruction?: string, maxRetries = 3) {
+  const confidence = meta?.extractionConfidence ?? "unknown";
+  let cautionNote = confidence === "low"
+    ? "\n⚠️ WARNING: Text quality is low. Use 'Content unclear from source' if unsure."
+    : "";
 
-NOTES TO PROCESS:
+  const basePrompt = `
+You are an AI that converts study notes into structured topics.
+
+RULES:
+1. Output ONLY valid JSON (no markdown, no text outside JSON)
+2. Return 2–4 topic objects
+3. Use ONLY the provided NOTES
+4. Each object must have: title, content, simplified_explanation, real_world_example, keywords
+5. If unclear, write "Content unclear from source"
+6. Keep titles under 80 characters
+7. Keywords must be an array of 3–5 strings
+
+NOTES:
 ${notes}
 
-Metadata: ${meta?.extractionMethod ?? "unknown"} extraction, confidence: ${confidence}
+Meta: ${meta?.extractionMethod ?? "unknown"} extraction, confidence: ${confidence}
 ${instruction || ""}${cautionNote}
-
-Return format (JSON array only):`;
+`.trim();
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`🔄 Attempt ${attempt} to generate topics`);
-      
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
         {
@@ -151,69 +164,47 @@ Return format (JSON array only):`;
             generationConfig: {
               response_mime_type: "application/json",
               temperature: 0.3,
-              maxOutputTokens: 2048
+              maxOutputTokens: 2048,
             },
           }),
         }
       );
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Gemini API error ${response.status}:`, errorText);
-        if (attempt === maxRetries) {
-          throw new Error(`Gemini API failed after ${maxRetries} attempts`);
-        }
+        const errText = await response.text();
+        console.error(`Gemini error ${response.status}:`, errText);
+        if (attempt === maxRetries) throw new Error(`Gemini failed after ${maxRetries} attempts`);
         continue;
       }
 
       const data = await response.json();
-      const rawContent = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      
-      if (!rawContent) {
-        console.error("No content in Gemini response");
-        if (attempt === maxRetries) {
-          throw new Error("No content returned from Gemini");
-        }
-        continue;
-      }
+      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!raw) throw new Error("Empty Gemini response");
 
-      console.log("Raw Gemini response (first 200 chars):", rawContent.slice(0, 200));
+      const topics = extractJsonFromResponse(raw);
+      if (topics.length > 0) return topics;
 
-      const topics = extractJsonFromResponse(rawContent);
-      
-      if (topics.length > 0) {
-        console.log(`✅ Successfully parsed ${topics.length} topics on attempt ${attempt}`);
-        return topics;
-      }
-
-      if (attempt === maxRetries) {
-        throw new Error("Could not parse valid topics from Gemini response");
-      }
-
-    } catch (error) {
-      console.error(`Attempt ${attempt} failed:`, error.message);
-      if (attempt === maxRetries) {
-        throw error;
-      }
-      // Wait before retry
-      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      if (attempt === maxRetries) throw new Error("Failed to parse topics from Gemini");
+    } catch (err) {
+      console.error(`Attempt ${attempt} failed:`, err.message);
+      if (attempt === maxRetries) throw err;
+      await new Promise((res) => setTimeout(res, 1000 * attempt));
     }
   }
 
   return [];
 }
 
-// 🎯 Generate quiz with fallback
-async function generateQuizForTopic(topic: any): Promise<any | null> {
+// 🎯 Quiz generator
+async function generateQuizForTopic(topic: any) {
   try {
-    const prompt = `Create a multiple choice question from this topic. Return ONLY valid JSON.
+    const prompt = `Make one multiple-choice question. Return ONLY valid JSON.
 
 TOPIC: ${topic.title}
 CONTENT: ${topic.content}
-EXPLANATION: ${topic.simplified_explanation}
 
-Return this exact JSON format:
-{"question":"Your question here?","options":["Option A","Option B","Option C","Option D"],"correct_answer":0,"explanation":"Why this answer is correct"}`;
+Format:
+{"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"..."}`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
@@ -222,206 +213,93 @@ Return this exact JSON format:
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            response_mime_type: "application/json",
-            temperature: 0.4,
-            maxOutputTokens: 512
-          },
+          generationConfig: { response_mime_type: "application/json" },
         }),
       }
     );
 
     if (!response.ok) {
-      console.error("Quiz generation failed:", await response.text());
+      console.error("Quiz generation error:", await response.text());
       return null;
     }
 
     const data = await response.json();
-    const rawContent = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    
-    if (!rawContent) return null;
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!raw) return null;
 
-    const quizzes = extractJsonFromResponse(rawContent);
-    const quiz = quizzes[0];
-
-    if (!quiz || !quiz.question) return null;
+    const parsed = extractJsonFromResponse(raw)[0];
+    if (!parsed) return null;
 
     return {
       topic_id: topic.id,
-      question: cleanExtractedText(quiz.question || "Question not available").slice(0, 500),
-      options: Array.isArray(quiz.options) 
-        ? quiz.options.slice(0, 4).map((opt: any) => cleanExtractedText(String(opt) || "Option").slice(0, 200))
-        : ["Option A", "Option B", "Option C", "Option D"],
-      correct_answer: typeof quiz.correct_answer === 'number' && quiz.correct_answer >= 0 && quiz.correct_answer <= 3 
-        ? quiz.correct_answer 
-        : 0,
-      explanation: cleanExtractedText(quiz.explanation || "No explanation available").slice(0, 500),
+      question: cleanExtractedText(parsed.question || "Question unavailable"),
+      options: Array.isArray(parsed.options)
+        ? parsed.options.slice(0, 4).map((o: string) => cleanExtractedText(o))
+        : ["A", "B", "C", "D"],
+      correct_answer: typeof parsed.correct_answer === "number" ? parsed.correct_answer : 0,
+      explanation: cleanExtractedText(parsed.explanation || ""),
     };
-
-  } catch (error) {
-    console.error("Quiz generation error:", error);
+  } catch (err) {
+    console.error("Quiz generation failed:", err);
     return null;
   }
 }
 
 // 🚀 Main handler
 serve(async (req) => {
-  // Handle CORS preflight
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    console.log("📄 Processing document request...");
+    const { documentId, extractedText, meta, instruction } = await req.json();
 
-    const body = await req.json();
-    const { documentId, extractedText, meta, instruction } = body;
-
-    // Validate required fields
-    if (!documentId) {
-      return new Response(
-        JSON.stringify({ error: "documentId is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    if (!documentId || !extractedText) {
+      return new Response(JSON.stringify({ error: "documentId and extractedText are required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    if (!extractedText || typeof extractedText !== 'string' || extractedText.trim().length === 0) {
-      return new Response(
-        JSON.stringify({ error: "Valid extractedText is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    // Mark processing
+    await supabase.from("documents").update({ processing_status: "processing" }).eq("id", documentId);
 
-    if (!GEMINI_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: "Gemini API key not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    // Generate topics
+    const notes = cleanExtractedText(extractedText);
+    const rawTopics = await generateTopicsWithRetry(notes, meta, instruction);
+    if (rawTopics.length === 0) throw new Error("No valid topics generated");
 
-    // Update document status to processing
-    await supabase
-      .from("documents")
-      .update({ processing_status: "processing" })
-      .eq("id", documentId);
+    const topics = rawTopics
+      .map((t, i) => validateAndCleanTopic(t, i, documentId))
+      .filter(Boolean);
 
-    // Clean and prepare text
-    const cleanedText = cleanExtractedText(extractedText);
-    const limitedText = cleanedText.slice(0, 50000); // Reasonable limit for Gemini
+    const { data: stored, error: insertErr } = await supabase.from("topics").insert(topics).select();
+    if (insertErr) throw new Error(`Insert topics failed: ${insertErr.message}`);
 
-    if (limitedText.length < 10) {
-      throw new Error("Extracted text is too short or contains no readable content");
-    }
-
-    console.log(`📝 Processing ${limitedText.length} characters of cleaned text`);
-
-    // Generate topics with retry logic
-    const rawTopics = await generateTopicsWithRetry(limitedText, meta, instruction);
-    
-    if (rawTopics.length === 0) {
-      throw new Error("Failed to generate any valid topics from the document");
-    }
-
-    // Validate and clean topics
-    const validTopics = rawTopics
-      .map((topic, index) => validateAndCleanTopic(topic, index, documentId))
-      .filter(topic => topic !== null);
-
-    if (validTopics.length === 0) {
-      throw new Error("No valid topics could be created from the generated content");
-    }
-
-    console.log(`✅ Created ${validTopics.length} valid topics`);
-
-    // Insert topics into database
-    const { data: insertedTopics, error: insertError } = await supabase
-      .from("topics")
-      .insert(validTopics)
-      .select();
-
-    if (insertError) {
-      console.error("Database insert error:", insertError);
-      throw new Error(`Failed to save topics: ${insertError.message}`);
-    }
-
-    console.log(`💾 Saved ${insertedTopics?.length || 0} topics to database`);
-
-    // Generate quizzes for each topic
+    // Generate quizzes
     let quizzesCreated = 0;
-    if (insertedTopics) {
-      for (const topic of insertedTopics) {
-        try {
-          const quiz = await generateQuizForTopic(topic);
-          if (quiz) {
-            const { error: quizError } = await supabase
-              .from("quizzes")
-              .insert([quiz]);
-            
-            if (!quizError) {
-              quizzesCreated++;
-            } else {
-              console.error(`Quiz insert error for topic ${topic.id}:`, quizError);
-            }
-          }
-        } catch (error) {
-          console.error(`Quiz generation failed for topic ${topic.id}:`, error);
-        }
+    for (const topic of stored ?? []) {
+      const quiz = await generateQuizForTopic(topic);
+      if (quiz) {
+        const { error: qErr } = await supabase.from("quizzes").insert([quiz]);
+        if (!qErr) quizzesCreated++;
       }
     }
 
-    console.log(`🎯 Created ${quizzesCreated} quizzes`);
-
-    // Mark document as completed
+    // Mark complete
     await supabase
       .from("documents")
-      .update({
-        processing_status: "completed",
-        processed_at: new Date().toISOString(),
-      })
+      .update({ processing_status: "completed", processed_at: new Date().toISOString() })
       .eq("id", documentId);
 
-    console.log("✅ Document processing completed successfully");
-
     return new Response(
-      JSON.stringify({
-        success: true,
-        topics: validTopics,
-        quizzesCreated,
-        message: `Successfully processed document with ${validTopics.length} topics and ${quizzesCreated} quizzes`,
-      }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      JSON.stringify({ success: true, topics, quizzesCreated, message: "Document processed" }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
+  } catch (err) {
+    console.error("❌ process-document error:", err);
 
-  } catch (error) {
-    console.error("❌ Document processing failed:", error);
-
-    // Try to update document status to failed
-    try {
-      const { documentId } = await req.json();
-      if (documentId) {
-        await supabase
-          .from("documents")
-          .update({
-            processing_status: "failed",
-            processed_at: new Date().toISOString(),
-          })
-          .eq("id", documentId);
-      }
-    } catch (statusUpdateError) {
-      console.error("Failed to update document status:", statusUpdateError);
-    }
-
-    return new Response(
-      JSON.stringify({
-        error: error?.message || String(error),
-        details: "Document processing failed. Please check the logs for more information.",
-      }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    return new Response(JSON.stringify({ error: err?.message || String(err) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });

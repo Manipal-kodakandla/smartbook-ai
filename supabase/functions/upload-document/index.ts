@@ -1,208 +1,213 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.56.1";
-import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
 };
 
-// ✅ Clean extracted text
-function cleanExtractedText(text: string) {
-  return text
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
-    .replace(/\\u[0-9a-fA-F]{0,3}(?![0-9a-fA-F])/g, "")
-    .replace(/\\[rnt]/g, " ")
-    .replace(/\\{2,}/g, "\\")
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+const supabase = createClient(
+  Deno.env.get("SUPABASE_URL") ?? "",
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+);
+
+// 🧹 Clean extracted text
+function cleanExtractedText(input: string): string {
+  if (!input || typeof input !== "string") return "";
+  return input
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, " ")
+    .replace(/[\u2028\u2029]/g, " ")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .slice(0, 10000);
 }
 
-// ✅ Extract text with pdf-lib
-async function extractPdfTextWithPdfLib(arrayBuffer: ArrayBuffer) {
-  try {
-    const pdfDoc = await PDFDocument.load(arrayBuffer);
-    const pdfBytes = await pdfDoc.save();
-    const pdfString = new TextDecoder("latin1").decode(pdfBytes);
-    let extractedText = "";
+// 🚫 Detect gibberish-like text
+function looksLikeGibberish(text: string): boolean {
+  if (!text) return true;
+  const letters = text.match(/[a-zA-Z]/g) || [];
+  return letters.length < 20; // too few real words
+}
 
-    const textMatches = pdfString.match(/\((.*?)\)\s*Tj/g) || [];
-    textMatches.forEach((match) => {
-      const text = match.match(/\((.*?)\)/)?.[1];
-      if (text && /[a-zA-Z0-9]/.test(text)) {
-        const cleanText = text
-          .replace(/\\n/g, "\n")
-          .replace(/\\r/g, "\r")
-          .replace(/\\t/g, "\t")
-          .replace(/\\\\/g, "\\")
-          .replace(/\\([()])/g, "$1");
-        extractedText += cleanText + " ";
+// 🔧 Try to extract JSON from Gemini response
+function extractJsonFromResponse(rawResponse: string): any[] {
+  if (!rawResponse) return [];
+
+  const tryParse = (str: string) => {
+    try {
+      return JSON.parse(str);
+    } catch {
+      return null;
+    }
+  };
+
+  // Method 1: direct parse
+  const direct = tryParse(rawResponse);
+  if (direct) return Array.isArray(direct) ? direct : [direct];
+
+  // Method 2: JSON in code block
+  const blockMatch = rawResponse.match(/```(?:json)?([\s\S]*?)```/);
+  if (blockMatch) {
+    const parsed = tryParse(blockMatch[1]);
+    if (parsed) return Array.isArray(parsed) ? parsed : [parsed];
+  }
+
+  // Method 3: JSON array/object
+  const arrMatch = rawResponse.match(/\[[\s\S]*\]/);
+  if (arrMatch) {
+    const parsed = tryParse(arrMatch[0]);
+    if (parsed) return Array.isArray(parsed) ? parsed : [parsed];
+  }
+
+  const objMatch = rawResponse.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    const parsed = tryParse(objMatch[0]);
+    if (parsed) return Array.isArray(parsed) ? parsed : [parsed];
+  }
+
+  console.error("❌ JSON parse failed. Raw preview:", rawResponse.slice(0, 300));
+  return [];
+}
+
+// ✅ Validate topic object
+function validateAndCleanTopic(topic: any, index: number, documentId: string) {
+  if (!topic || typeof topic !== "object") return null;
+
+  const clean = (val: any, fallback = "") =>
+    cleanExtractedText(typeof val === "string" ? val : fallback);
+
+  const keywords = Array.isArray(topic.keywords)
+    ? topic.keywords
+        .map((k) => clean(k, ""))
+        .filter((k) => k.length > 0 && k.length < 50)
+        .slice(0, 5)
+    : ["general"];
+
+  return {
+    document_id: documentId,
+    title: clean(topic.title, `Topic ${index + 1}`).slice(0, 80),
+    content: clean(topic.content, "Content unclear from source").slice(0, 2000),
+    simplified_explanation: clean(topic.simplified_explanation, "").slice(0, 1000),
+    real_world_example: clean(topic.real_world_example, "").slice(0, 1000),
+    keywords,
+    topic_order: index,
+  };
+}
+
+// 🔄 Retry Gemini call
+async function generateTopicsWithRetry(notes: string, meta: any, instruction?: string, maxRetries = 3) {
+  const basePrompt = `Extract clear, structured topics from the following text.
+
+Rules:
+- JSON array only
+- Each topic has: title, content, simplified_explanation, real_world_example, keywords
+- If unclear, set fields to "Content unclear from source"
+- Keep title under 80 chars
+- 3–5 keywords per topic
+
+Text:
+${notes}
+
+Metadata: ${meta?.extractionMethod ?? "unknown"}
+${instruction || ""}`;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: basePrompt }] }],
+            generationConfig: {
+              response_mime_type: "application/json",
+              temperature: 0.3,
+              maxOutputTokens: 2048,
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        console.error("Gemini error:", await response.text());
+        continue;
       }
-    });
 
-    extractedText = cleanExtractedText(extractedText);
+      const data = await response.json();
+      const rawContent = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-    return {
-      text: extractedText || "[PDF_LIB_EMPTY]",
-      method: "pdf-lib",
-      status: extractedText.length > 20 ? "success" : "minimal_text",
-      confidence: extractedText.length > 500 ? "high" : "medium",
-    };
-  } catch (err) {
-    console.error("❌ pdf-lib failed:", err);
-    return { text: "[PDF_LIB_ERROR]", method: "pdf-lib", status: "error", confidence: "low" };
+      const topics = extractJsonFromResponse(rawContent);
+      if (topics.length > 0) return topics;
+    } catch (err) {
+      console.error(`Retry ${attempt} failed:`, err.message);
+    }
+    await new Promise((r) => setTimeout(r, attempt * 1000));
   }
+  return [];
 }
 
-// ✅ Manual fallback
-async function extractPdfTextManual(arrayBuffer: ArrayBuffer) {
-  try {
-    const pdfString = new TextDecoder("latin1").decode(arrayBuffer);
-    let extractedText = "";
-    const matches = pdfString.match(/\([^)]{2,}\)/g) || [];
-    matches.forEach((match) => {
-      const text = match.slice(1, -1);
-      if (/[a-zA-Z0-9]/.test(text)) extractedText += text + " ";
-    });
-
-    extractedText = cleanExtractedText(extractedText);
-
-    return {
-      text: extractedText || "[MANUAL_EMPTY]",
-      method: "manual",
-      status: extractedText.length > 20 ? "success" : "minimal_text",
-      confidence: extractedText.length > 300 ? "medium" : "low",
-    };
-  } catch (err) {
-    console.error("❌ Manual parse failed:", err);
-    return { text: "[MANUAL_ERROR]", method: "manual", status: "error", confidence: "low" };
-  }
-}
-
-// ✅ Try pdf-lib → fallback to manual
-async function extractPdfText(arrayBuffer: ArrayBuffer) {
-  const pdfLibResult = await extractPdfTextWithPdfLib(arrayBuffer);
-  if (pdfLibResult.status === "success" && pdfLibResult.text.length > 50) {
-    return pdfLibResult;
-  }
-  return await extractPdfTextManual(arrayBuffer);
-}
-
+// 🚀 Main handler
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
-    );
+    const body = await req.json();
+    const { documentId, extractedText, meta, instruction } = body;
 
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
-    const userId = formData.get("userId") as string | null;
-
-    if (!file || !userId) {
-      return new Response(JSON.stringify({ error: "File and userId are required" }), {
+    if (!documentId) {
+      return new Response(JSON.stringify({ error: "documentId required" }), {
         status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: corsHeaders,
       });
     }
 
-    const fileBuffer = await file.arrayBuffer();
-    const fileName = file.name;
-    const fileType = file.type || "application/octet-stream";
-    const fileSize = file.size;
-
-    // ✅ Upload to Supabase Storage
-    const { error: storageError } = await supabase.storage
-      .from("documents")
-      .upload(`${userId}/${fileName}`, new Blob([fileBuffer], { type: fileType }), { upsert: true });
-
-    if (storageError) console.error("⚠️ Storage upload failed:", storageError);
-
-    // ✅ Extract text
-    let extractedText = "";
-    let extractionStatus = "success";
-    let extractionMethod = "unknown";
-    let extractionConfidence = "low";
-
-    if (fileType === "text/plain") {
-      extractedText = cleanExtractedText(new TextDecoder().decode(fileBuffer));
-      extractionMethod = "text-decoder";
-      extractionConfidence = extractedText.length > 200 ? "high" : "medium";
-    } else if (fileType === "application/pdf") {
-      const pdfResult = await extractPdfText(fileBuffer);
-      extractedText = pdfResult.text;
-      extractionMethod = pdfResult.method;
-      extractionStatus = pdfResult.status;
-      extractionConfidence = pdfResult.confidence;
-    } else {
-      extractedText = `[UNSUPPORTED] ${fileType}`;
-      extractionStatus = "unsupported";
-      extractionMethod = "none";
-      extractionConfidence = "low";
+    if (!extractedText || looksLikeGibberish(extractedText)) {
+      throw new Error("Extracted text looks like gibberish or is empty");
     }
 
-    // ✅ Save doc metadata
-    const { data: document, error: docError } = await supabase
-      .from("documents")
-      .insert([{
-        user_id: userId,
-        title: fileName.replace(/\.[^/.]+$/, ""),
-        file_name: fileName,
-        file_type: fileType,
-        file_size: fileSize,
-        extracted_text: extractedText,
-        processing_status: "processing",
-        extraction_status: extractionStatus,
-        extraction_method: extractionMethod,
-        extraction_confidence: extractionConfidence,
-      }])
-      .select()
-      .single();
+    await supabase.from("documents").update({ processing_status: "processing" }).eq("id", documentId);
 
-    if (docError) throw new Error(`DB insert failed: ${docError.message}`);
+    const cleanedText = cleanExtractedText(extractedText).slice(0, 50000);
+    if (cleanedText.length < 10) throw new Error("Too little usable text");
 
-    // ✅ Check if text is useful (NEW guard)
-    const looksLikeGibberish = !/[a-zA-Z]{5,}/.test(extractedText);
-    const hasUsefulText =
-      extractedText.length > 100 &&
-      extractionStatus === "success" &&
-      !extractedText.startsWith("[") &&
-      !looksLikeGibberish;
+    const rawTopics = await generateTopicsWithRetry(cleanedText, meta, instruction);
+    if (rawTopics.length === 0) throw new Error("No valid topics from Gemini");
 
-    if (hasUsefulText) {
-      await supabase.functions.invoke("process-document", {
-        body: JSON.stringify({
-          documentId: document.id,
-          extractedText: extractedText.slice(0, 120_000),
-          meta: { fileName, fileType, extractionMethod, extractionStatus, extractionConfidence },
-          instruction: "Summaries must stay faithful to text. If incomplete, clearly say so.",
-        }),
-      });
-    } else {
-      await supabase.from("documents").update({
-        processing_status: "completed",
-        processed_at: new Date().toISOString(),
-      }).eq("id", document.id);
-    }
+    const validTopics = rawTopics
+      .map((t, i) => validateAndCleanTopic(t, i, documentId))
+      .filter((t) => t !== null);
+
+    if (validTopics.length === 0) throw new Error("No valid topics after cleaning");
+
+    const { data: inserted, error: insertErr } = await supabase
+      .from("topics")
+      .insert(validTopics)
+      .select();
+
+    if (insertErr) throw new Error(`Failed to insert topics: ${insertErr.message}`);
+
+    await supabase.from("documents").update({
+      processing_status: "completed",
+      processed_at: new Date().toISOString(),
+    }).eq("id", documentId);
 
     return new Response(
       JSON.stringify({
         success: true,
-        document,
-        extraction: { status: extractionStatus, method: extractionMethod, confidence: extractionConfidence, length: extractedText.length },
-        message: hasUsefulText ? `✅ Extracted with ${extractionMethod}. AI started.` : `📄 Uploaded but insufficient text (status: ${extractionStatus}).`,
+        topics: validTopics,
+        message: `✅ Processed with ${validTopics.length} topics`,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-
-  } catch (error) {
-    console.error("💥 Upload error:", error);
-    return new Response(JSON.stringify({ error: error.message || String(error) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  } catch (err) {
+    console.error("❌ Process failed:", err.message);
+    return new Response(
+      JSON.stringify({ error: err.message || String(err) }),
+      { status: 500, headers: corsHeaders }
+    );
   }
 });

@@ -53,25 +53,28 @@ export const documentService = {
     console.log('FormData prepared, calling supabase function...');
 
     try {
+      console.log('🔄 Calling supabase function upload-document...');
       const { data, error } = await supabase.functions.invoke('upload-document', {
         body: formData,
       });
 
-      console.log('Supabase function response:', { data, error });
+      console.log('📥 Supabase function response:', { data, error });
 
       if (error) {
-        console.error('Supabase function error:', error);
+        console.error('❌ Supabase function error:', error);
         throw new Error(error.message || 'Failed to upload document');
       }
 
       if (!data || !data.document) {
+        console.error('❌ Invalid response structure:', data);
         throw new Error('Invalid response from upload function');
       }
 
-      console.log('Upload successful:', data.document);
+      console.log('✅ Upload successful, document:', data.document);
+      console.log('📊 Processing status:', data.document.processing_status);
       return data.document;
     } catch (error) {
-      console.error('Upload error in documentService:', error);
+      console.error('💥 Upload error in documentService:', error);
       throw error;
     }
   },

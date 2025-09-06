@@ -28,13 +28,20 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
         loadTopics(selectedDocument.id);
       } else {
         // Poll for processing completion
+        console.log('📄 Document not completed yet, starting polling. Status:', selectedDocument.processing_status);
         const pollInterval = setInterval(async () => {
           try {
+            console.log('🔄 Polling for document processing completion...');
             const updatedDocs = await documentService.getUserDocuments(user?.id || '');
             const updatedDoc = updatedDocs.find(doc => doc.id === selectedDocument.id);
+            console.log('📊 Current document status:', updatedDoc?.processing_status);
             if (updatedDoc?.processing_status === 'completed') {
+              console.log('✅ Document processing completed, loading topics...');
               clearInterval(pollInterval);
               loadTopics(selectedDocument.id);
+            } else if (updatedDoc?.processing_status === 'failed') {
+              console.log('❌ Document processing failed');
+              clearInterval(pollInterval);
             }
           } catch (error) {
             console.error('Error polling document status:', error);

@@ -178,15 +178,34 @@ serve(async (req) => {
       !extractedText.startsWith("[");
     if (hasUsefulText) {
       console.log("🤖 Invoking AI processing...");
-      await supabase.functions.invoke("process-document", {
-        body: JSON.stringify({
-          documentId: document.id,
-          extractedText: extractedText.slice(0, 120_000),
-          meta: { fileName, fileType, extractionMethod, extractionStatus, extractionConfidence },
-          instruction:
-            "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, say so clearly.",
-        }),
-      });
+      try {
+        const { data: processResult, error: processError } = await supabase.functions.invoke("process-document", {
+          body: {
+            documentId: document.id,
+            extractedText: extractedText.slice(0, 120_000),
+            meta: { fileName, fileType, extractionMethod, extractionStatus, extractionConfidence },
+            instruction:
+              "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, say so clearly.",
+          },
+        });
+        
+        if (processError) {
+          console.error("❌ Process document function error:", processError);
+          // Update status to failed if processing fails
+          await supabase
+            .from("documents")
+            .update({ processing_status: "failed", processed_at: new Date().toISOString() })
+            .eq("id", document.id);
+        } else {
+          console.log("✅ Process document function succeeded:", processResult);
+        }
+      } catch (error) {
+        console.error("❌ Failed to invoke process-document function:", error);
+        await supabase
+          .from("documents")
+          .update({ processing_status: "failed", processed_at: new Date().toISOString() })
+          .eq("id", document.id);
+      }
     } else {
       await supabase
         .from("documents")

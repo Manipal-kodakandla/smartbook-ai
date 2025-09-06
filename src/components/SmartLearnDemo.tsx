@@ -21,12 +21,30 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
   const [totalQuizzes, setTotalQuizzes] = useState(0);
   const { user } = useAuth();
 
-  // Load topics when document is selected
+  // Load topics when document is selected and poll for processing completion
   useEffect(() => {
     if (selectedDocument) {
-      loadTopics(selectedDocument.id);
+      if (selectedDocument.processing_status === 'completed') {
+        loadTopics(selectedDocument.id);
+      } else {
+        // Poll for processing completion
+        const pollInterval = setInterval(async () => {
+          try {
+            const updatedDocs = await documentService.getUserDocuments(user?.id || '');
+            const updatedDoc = updatedDocs.find(doc => doc.id === selectedDocument.id);
+            if (updatedDoc?.processing_status === 'completed') {
+              clearInterval(pollInterval);
+              loadTopics(selectedDocument.id);
+            }
+          } catch (error) {
+            console.error('Error polling document status:', error);
+          }
+        }, 2000); // Poll every 2 seconds
+
+        return () => clearInterval(pollInterval);
+      }
     }
-  }, [selectedDocument]);
+  }, [selectedDocument, user?.id]);
 
   const loadTopics = async (documentId: string) => {
     try {
@@ -145,13 +163,29 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                 </div>
                 <p className="text-muted-foreground">Loading topics...</p>
               </div>
-            ) : topics.length === 0 ? (
+            ) : !selectedDocument ? (
               <div className="text-center py-12">
                 <div className="w-12 h-12 bg-primary/8 rounded-xl flex items-center justify-center mx-auto mb-4">
                   <Brain className="w-6 h-6 text-primary" />
                 </div>
                 <h3 className="text-lg font-medium mb-2">No Document Selected</h3>
                 <p className="text-muted-foreground">Upload a document to start learning with AI-generated topics and quizzes.</p>
+              </div>
+            ) : selectedDocument.processing_status !== 'completed' ? (
+              <div className="text-center py-12">
+                <div className="w-12 h-12 bg-primary/8 rounded-xl flex items-center justify-center mx-auto mb-4 animate-pulse">
+                  <Brain className="w-6 h-6 text-primary" />
+                </div>
+                <h3 className="text-lg font-medium mb-2">Processing Document</h3>
+                <p className="text-muted-foreground">AI is analyzing your document and generating topics. This may take a few moments...</p>
+              </div>
+            ) : topics.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="w-12 h-12 bg-primary/8 rounded-xl flex items-center justify-center mx-auto mb-4">
+                  <Brain className="w-6 h-6 text-primary" />
+                </div>
+                <h3 className="text-lg font-medium mb-2">No Topics Found</h3>
+                <p className="text-muted-foreground">Unable to generate topics from this document. Please try uploading a different file.</p>
               </div>
             ) : (
               <>

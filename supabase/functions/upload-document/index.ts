@@ -5,8 +5,7 @@ import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 // ✅ Clean extracted text
@@ -20,7 +19,7 @@ function cleanExtractedText(text: string) {
     .trim();
 }
 
-// ✅ Hybrid PDF text extractor (Tj + TJ + BT/ET)
+// ✅ Hybrid PDF text extractor
 async function extractPdfText(arrayBuffer: ArrayBuffer) {
   try {
     console.log("🔄 Extracting PDF text with hybrid parser...");
@@ -99,79 +98,55 @@ serve(async (req) => {
 
   try {
     console.log("📤 Upload request received");
-
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
     let fileName, fileType, fileSize, fileBuffer, userId;
-
-    // 🔍 Auto-detect content type
     const contentType = req.headers.get("content-type") || "";
 
     if (contentType.includes("multipart/form-data")) {
-      // ✅ Handle FormData upload
       const formData = await req.formData();
       const file = formData.get("file");
       userId = formData.get("userId");
-
       if (!file || !userId) {
-        return new Response(
-          JSON.stringify({ error: "File and userId are required" }),
-          {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          }
-        );
+        return new Response(JSON.stringify({ error: "File and userId are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
-
       fileName = file.name;
       fileType = file.type || "application/octet-stream";
       fileSize = file.size;
       fileBuffer = await file.arrayBuffer();
     } else if (contentType.includes("application/json")) {
-      // ✅ Handle JSON base64 upload
       const body = await req.json();
       const { fileBase64, name, type, size, userId: uid } = body;
-
       if (!fileBase64 || !uid) {
-        return new Response(
-          JSON.stringify({ error: "fileBase64 and userId are required" }),
-          {
-            status: 400,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          }
-        );
+        return new Response(JSON.stringify({ error: "fileBase64 and userId are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
-
       userId = uid;
       fileName = name || "upload.txt";
       fileType = type || "application/octet-stream";
       fileSize = size || fileBase64.length;
-      fileBuffer = Uint8Array.from(atob(fileBase64), (c) =>
-        c.charCodeAt(0)
-      ).buffer;
+      fileBuffer = Uint8Array.from(atob(fileBase64), (c) => c.charCodeAt(0)).buffer;
     } else {
-      return new Response(
-        JSON.stringify({ error: "Unsupported content type" }),
-        {
-          status: 415,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      return new Response(JSON.stringify({ error: "Unsupported content type" }), {
+        status: 415,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // ✅ Upload to Supabase Storage
-    const { error: storageError } = await supabase.storage
-      .from("documents")
-      .upload(`${userId}/${fileName}`, new Blob([fileBuffer], { type: fileType }), {
-        upsert: true,
-      });
-
-    if (storageError) {
-      console.error("⚠️ Storage upload failed:", storageError);
-    }
+    await supabase.storage.from("documents").upload(
+      `${userId}/${fileName}`,
+      new Blob([fileBuffer], { type: fileType }),
+      { upsert: true }
+    );
 
     // ✅ Extract text
     let extractedText = "";
@@ -197,112 +172,51 @@ serve(async (req) => {
     // ✅ Insert into DB
     const { data: document, error: docError } = await supabase
       .from("documents")
-      .insert([
-        {
-          user_id: userId,
-          title: fileName.replace(/\.[^/.]+$/, ""),
-          file_name: fileName,
-          file_type: fileType,
-          file_size: fileSize,
-          extracted_text: extractedText,
-          processing_status: "processing",
-          extraction_status: extractionStatus,
-          extraction_method: extractionMethod,
-          extraction_confidence: extractionConfidence,
-        },
-      ])
+      .insert([{
+        user_id: userId,
+        title: fileName.replace(/\.[^/.]+$/, ""),
+        file_name: fileName,
+        file_type: fileType,
+        file_size: fileSize,
+        extracted_text: extractedText,
+        processing_status: "processing",
+        extraction_status: extractionStatus,
+        extraction_method: extractionMethod,
+        extraction_confidence: extractionConfidence,
+      }])
       .select()
       .single();
 
     if (docError) throw new Error(`DB insert failed: ${docError.message}`);
-    console.log(`✅ Document saved: ${document.id}`);
+    console.log(`✅ Document saved: ${document.id}, extracted length=${extractedText.length}`);
 
-    // ✅ Trigger AI function if enough text
-    console.log(
-      `📊 Text analysis: length=${extractedText.length}, status=${extractionStatus}`
-    );
-
-    const hasUsefulText = extractedText.length > 50 && extractionStatus === "success";
-    console.log(`🔍 Has useful text: ${hasUsefulText}`);
-
+    // ✅ Trigger AI function
+    const hasUsefulText = extractedText.length > 20 && extractionStatus !== "error";
     if (hasUsefulText) {
-      console.log("🤖 Invoking AI processing...");
-      try {
-        const { data: processResult, error: processError } =
-          await supabase.functions.invoke("process-document", {
-            body: {
-              documentId: document.id,
-              extractedText: extractedText.slice(0, 120_000),
-              meta: {
-                fileName,
-                fileType,
-                extractionMethod,
-                extractionStatus,
-                extractionConfidence,
-              },
-              instruction:
-                "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, say so clearly.",
-            },
-          });
-
-        if (processError) {
-          console.error("❌ Process document function error:", processError);
-          await supabase
-            .from("documents")
-            .update({
-              processing_status: "failed",
-              processed_at: new Date().toISOString(),
-            })
-            .eq("id", document.id);
-        } else {
-          console.log("✅ Process document function succeeded:", processResult);
-        }
-      } catch (error) {
-        console.error("❌ Failed to invoke process-document function:", error);
-        await supabase
-          .from("documents")
-          .update({
-            processing_status: "failed",
-            processed_at: new Date().toISOString(),
-          })
-          .eq("id", document.id);
-      }
+      await supabase.functions.invoke("process-document", {
+        body: {
+          documentId: document.id,
+          extractedText: extractedText.slice(0, 120_000),
+          meta: { fileName, fileType, extractionMethod, extractionStatus, extractionConfidence },
+          instruction:
+            "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, say so clearly.",
+        },
+      });
     } else {
-      console.log("⏭️ Skipping AI processing - insufficient useful text");
-      await supabase
-        .from("documents")
-        .update({
-          processing_status: "completed",
-          processed_at: new Date().toISOString(),
-        })
-        .eq("id", document.id);
+      await supabase.from("documents").update({
+        processing_status: "completed",
+        processed_at: new Date().toISOString(),
+      }).eq("id", document.id);
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        document,
-        extraction: {
-          status: extractionStatus,
-          method: extractionMethod,
-          confidence: extractionConfidence,
-        },
-        message: hasUsefulText
-          ? `✅ Extracted with ${extractionMethod} (confidence: ${extractionConfidence}). AI started.`
-          : `📄 Uploaded but insufficient text (status: ${extractionStatus}).`,
-      }),
-      {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    return new Response(JSON.stringify({ success: true, document }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (error) {
     console.error("💥 Global error:", error);
-    return new Response(
-      JSON.stringify({ error: error.message || String(error) }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    return new Response(JSON.stringify({ error: error.message || String(error) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });

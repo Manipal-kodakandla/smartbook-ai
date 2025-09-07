@@ -21,10 +21,52 @@ function cleanExtractedText(input: string): string {
     .replace(/[\u2028\u2029]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 15000); // Increased limit for better context
+    .slice(0, 15000);
 }
 
-// 🚫 Detect gibberish-like text
+// 🚫 Enhanced garbage detection
+function isGarbageText(text: string): boolean {
+  if (!text || text.length < 10) return true;
+  
+  const words = text.split(/\s+/).filter(w => w.length > 0);
+  const totalWords = words.length;
+  
+  if (totalWords < 5) return true;
+  
+  // Check for meaningful words (at least 3 characters, mostly letters)
+  const meaningfulWords = words.filter(word => {
+    const cleanWord = word.replace(/[^\w]/g, '');
+    return cleanWord.length >= 3 && 
+           /^[a-zA-Z]{2,}/.test(cleanWord) &&
+           cleanWord.length <= 20;
+  });
+  
+  // Check for random character strings (common in bad PDF extraction)
+  const randomStrings = words.filter(word => {
+    const cleanWord = word.replace(/[^\w]/g, '');
+    return cleanWord.length > 2 && 
+           /[A-Z]/.test(cleanWord) && 
+           /[a-z]/.test(cleanWord) && 
+           (/[0-9]/.test(cleanWord) || cleanWord.length <= 6) &&
+           !/^[A-Z][a-z]+$/.test(cleanWord);
+  });
+  
+  const meaningfulRatio = meaningfulWords.length / totalWords;
+  const garbageRatio = randomStrings.length / totalWords;
+  
+  console.log('🔍 Text quality analysis:', {
+    totalWords,
+    meaningfulWords: meaningfulWords.length,
+    randomStrings: randomStrings.length,
+    meaningfulRatio: meaningfulRatio.toFixed(2),
+    garbageRatio: garbageRatio.toFixed(2),
+    sampleWords: words.slice(0, 5)
+  });
+  
+  return meaningfulRatio < 0.3 || garbageRatio > 0.4;
+}
+
+// 🚫 Original function (keep for compatibility)
 function looksLikeGibberish(text: string): boolean {
   if (!text) return true;
   const letters = text.match(/[a-zA-Z]/g) || [];
@@ -32,7 +74,7 @@ function looksLikeGibberish(text: string): boolean {
   return letters.length < 20 || words.length < 5;
 }
 
-// 🎯 Enhanced JSON extraction with multiple strategies
+// 🔧 Enhanced JSON extraction
 function extractJsonFromResponse(rawResponse: string): any[] {
   if (!rawResponse) return [];
   
@@ -81,47 +123,11 @@ function extractJsonFromResponse(rawResponse: string): any[] {
   }
   if (objects.length > 0) return objects;
 
-  // Strategy 5: Line-by-line reconstruction for malformed JSON
-  const lines = rawResponse.split('\n').map(l => l.trim()).filter(l => l);
-  const reconstructed = [];
-  let currentObj = {};
-  let inObject = false;
-
-  for (const line of lines) {
-    if (line.includes('"title"') && line.includes(':')) {
-      if (inObject && Object.keys(currentObj).length > 0) {
-        reconstructed.push({...currentObj});
-      }
-      currentObj = {};
-      inObject = true;
-      
-      const titleMatch = line.match(/"title"\s*:\s*"([^"]+)"/);
-      if (titleMatch) currentObj.title = titleMatch[1];
-    } else if (inObject) {
-      const fieldMatch = line.match(/"([^"]+)"\s*:\s*"([^"]+)"/);
-      if (fieldMatch) {
-        currentObj[fieldMatch[1]] = fieldMatch[2];
-      }
-      const arrayMatch = line.match(/"keywords"\s*:\s*\[(.*?)\]/);
-      if (arrayMatch) {
-        currentObj.keywords = arrayMatch[1].split(',').map(k => k.trim().replace(/"/g, ''));
-      }
-    }
-  }
-  if (inObject && Object.keys(currentObj).length > 0) {
-    reconstructed.push(currentObj);
-  }
-  
-  if (reconstructed.length > 0) {
-    console.log("✅ Reconstructed from malformed JSON:", reconstructed.length, "objects");
-    return reconstructed;
-  }
-
   console.error("❌ All JSON parsing strategies failed");
   return [];
 }
 
-// ✅ Enhanced topic validation and cleaning
+// ✅ Enhanced topic validation
 function validateAndCleanTopic(topic: any, index: number, documentId: string) {
   if (!topic || typeof topic !== "object") return null;
 
@@ -130,7 +136,6 @@ function validateAndCleanTopic(topic: any, index: number, documentId: string) {
     return cleanExtractedText(val).replace(/["""'']/g, '"');
   };
 
-  // Skip completely empty or placeholder topics
   const badValues = [
     "content unclear", "unclear", "example of application", 
     "no content", "not available", "see document", "refer to text",
@@ -147,10 +152,8 @@ function validateAndCleanTopic(topic: any, index: number, documentId: string) {
     return null;
   }
 
-  // Ensure minimum content quality
   if (title.length < 3 || content.length < 10) return null;
 
-  // Process keywords
   let keywords = [];
   if (Array.isArray(topic.keywords)) {
     keywords = topic.keywords.map(k => clean(k)).filter(k => k.length > 0);
@@ -158,7 +161,6 @@ function validateAndCleanTopic(topic: any, index: number, documentId: string) {
     keywords = topic.keywords.split(',').map(k => clean(k)).filter(k => k.length > 0);
   }
   
-  // Generate keywords from content if none provided
   if (keywords.length === 0) {
     const words = content.toLowerCase().split(/\s+/)
       .filter(w => w.length > 3 && !/^(the|and|for|with|this|that|from)$/.test(w))
@@ -177,7 +179,103 @@ function validateAndCleanTopic(topic: any, index: number, documentId: string) {
   };
 }
 
-// 🤖 Enhanced Gemini prompt with explicit JSON structure
+// 🛡️ Enhanced fallback topic generator
+function createFallbackTopics(text: string, documentId: string): any[] {
+  console.log("🛡️ Creating enhanced fallback topics...");
+  
+  if (isGarbageText(text)) {
+    console.log("⚠️ Text appears to be corrupted/garbage, creating generic topics");
+    return [{
+      document_id: documentId,
+      title: "Document Content",
+      content: "This document contains content that needs to be reviewed. The text extraction may not have been successful, but the document is available for reference.",
+      simplified_explanation: "The document has been uploaded but the text content could not be properly extracted. This commonly happens with scanned PDFs or documents with complex formatting.",
+      real_world_example: "When working with important documents, always verify that the content is readable and consider using alternative formats like plain text files when possible.",
+      keywords: ["document", "content", "review"],
+      topic_order: 0,
+    }];
+  }
+  
+  // Clean text more aggressively for fallback
+  const cleanedText = text
+    .split(/\s+/)
+    .filter(word => {
+      const clean = word.replace(/[^\w]/g, '');
+      return clean.length >= 3 && 
+             clean.length <= 20 && 
+             /^[a-zA-Z]+$/.test(clean) && 
+             (clean.length > 3 || /^[A-Z][a-z]+$/.test(clean));
+    })
+    .join(' ');
+  
+  if (cleanedText.length < 50) {
+    console.log("⚠️ Insufficient clean text for meaningful topics");
+    return [{
+      document_id: documentId,
+      title: "Document Summary",
+      content: "This document contains information that requires manual review. The automatic text processing was not able to extract sufficient readable content.",
+      simplified_explanation: "Sometimes documents have formatting or encoding that makes automatic processing difficult. The original document should be reviewed manually.",
+      real_world_example: "In professional settings, important documents should always be verified for readability and accuracy, especially when using automated processing tools.",
+      keywords: ["document", "processing", "review"],
+      topic_order: 0,
+    }];
+  }
+  
+  const sentences = cleanedText.split(/[.!?]+/).filter(s => s.trim().length > 20).map(s => s.trim());
+  const topics = [];
+  const chunkSize = Math.max(2, Math.floor(sentences.length / 3));
+  
+  // Generate keywords from clean text
+  const words = cleanedText.toLowerCase().split(/\s+/);
+  const wordFreq = {};
+  words.forEach(word => {
+    const cleaned = word.replace(/[^\w]/g, '');
+    if (cleaned.length > 3 && cleaned.length < 15) {
+      wordFreq[cleaned] = (wordFreq[cleaned] || 0) + 1;
+    }
+  });
+  
+  const topKeywords = Object.entries(wordFreq)
+    .sort(([,a], [,b]) => (b as number) - (a as number))
+    .slice(0, 8)
+    .map(([word]) => word);
+  
+  for (let i = 0; i < Math.min(sentences.length, 9); i += chunkSize) {
+    const chunk = sentences.slice(i, i + chunkSize).join('. ').trim();
+    if (chunk.length > 30) {
+      const topicKeywords = topKeywords.slice((i / chunkSize) * 2, (i / chunkSize) * 2 + 3);
+      
+      topics.push({
+        document_id: documentId,
+        title: `Key Topic ${topics.length + 1}`,
+        content: chunk.slice(0, 800),
+        simplified_explanation: `This topic covers concepts related to ${topicKeywords.slice(0, 2).join(' and ')}.`,
+        real_world_example: `Understanding these concepts can help in practical applications involving ${topicKeywords[0] || 'the subject matter'}.`,
+        keywords: topicKeywords.length > 0 ? topicKeywords : ['content', 'topic'],
+        topic_order: topics.length,
+      });
+      
+      if (topics.length >= 4) break;
+    }
+  }
+  
+  if (topics.length === 0) {
+    topics.push({
+      document_id: documentId,
+      title: "Document Overview",
+      content: cleanedText.slice(0, 500),
+      simplified_explanation: "This represents the main content that could be extracted from the document.",
+      real_world_example: "Document processing often requires manual verification to ensure accuracy and completeness.",
+      keywords: topKeywords.slice(0, 3).length > 0 ? topKeywords.slice(0, 3) : ['document', 'content'],
+      topic_order: 0,
+    });
+  }
+  
+  console.log(`✅ Created ${topics.length} enhanced fallback topics from cleaned text`);
+  return topics;
+}
+
+// 🤖 Enhanced Gemini processing
 async function generateTopicsWithRetry(
   notes: string,
   meta: any,
@@ -262,7 +360,6 @@ Return JSON only:`;
       console.error(`❌ Attempt ${attempt} failed:`, err.message);
     }
     
-    // Exponential backoff
     if (attempt < maxRetries) {
       await new Promise(r => setTimeout(r, attempt * 1500));
     }
@@ -270,65 +367,6 @@ Return JSON only:`;
   
   console.warn("⚠️ All Gemini attempts failed");
   return [];
-}
-
-// 🛡️ Smart fallback topic generator
-function createFallbackTopics(text: string, documentId: string): any[] {
-  console.log("🛡️ Creating fallback topics from text analysis...");
-  
-  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 20);
-  const words = text.toLowerCase().split(/\s+/);
-  const wordFreq = {};
-  
-  // Count word frequency for keywords
-  words.forEach(word => {
-    const cleaned = word.replace(/[^\w]/g, '');
-    if (cleaned.length > 3) {
-      wordFreq[cleaned] = (wordFreq[cleaned] || 0) + 1;
-    }
-  });
-  
-  const topKeywords = Object.entries(wordFreq)
-    .sort(([,a], [,b]) => b - a)
-    .slice(0, 10)
-    .map(([word]) => word);
-  
-  // Create topics from text chunks
-  const topics = [];
-  const chunkSize = Math.max(3, Math.floor(sentences.length / 4));
-  
-  for (let i = 0; i < Math.min(sentences.length, 12); i += chunkSize) {
-    const chunk = sentences.slice(i, i + chunkSize).join('. ');
-    if (chunk.length > 30) {
-      const topicKeywords = topKeywords.slice(i % 3, (i % 3) + 3);
-      
-      topics.push({
-        document_id: documentId,
-        title: `Key Concept ${topics.length + 1}`,
-        content: chunk.slice(0, 500),
-        simplified_explanation: `This section covers important concepts related to ${topicKeywords.join(', ')}.`,
-        real_world_example: `These concepts can be applied in practical scenarios involving ${topicKeywords[0] || 'the subject matter'}.`,
-        keywords: topicKeywords.length > 0 ? topicKeywords : ['study', 'notes', 'concept'],
-        topic_order: topics.length,
-      });
-    }
-  }
-  
-  // Ensure minimum topics
-  if (topics.length === 0) {
-    topics.push({
-      document_id: documentId,
-      title: "Document Summary",
-      content: text.slice(0, 800),
-      simplified_explanation: "This document contains educational content for study and review.",
-      real_world_example: "The concepts in this document can be applied in academic and professional contexts.",
-      keywords: topKeywords.slice(0, 3).length > 0 ? topKeywords.slice(0, 3) : ['notes', 'study'],
-      topic_order: 0,
-    });
-  }
-  
-  console.log(`✅ Created ${topics.length} fallback topics`);
-  return topics.slice(0, 8); // Limit to 8 topics max
 }
 
 // 🚀 Main handler
@@ -366,6 +404,45 @@ serve(async (req) => {
       throw new Error("Insufficient text content after cleaning");
     }
 
+    // 🔍 DEBUG LOGGING (remove after testing)
+    console.log("🔍 DEBUG: Raw text preview:", extractedText?.slice(0, 200));
+    console.log("🔍 DEBUG: Cleaned text preview:", cleanedText?.slice(0, 200));
+
+    // Enhanced garbage detection before processing
+    if (isGarbageText(cleanedText)) {
+      console.log("⚠️ Detected garbage/corrupted text, using enhanced fallback generation...");
+      
+      const fallbackTopics = createFallbackTopics(cleanedText, documentId);
+      
+      const { error: insertError } = await supabase
+        .from("topics")
+        .insert(fallbackTopics);
+
+      if (insertError) {
+        throw new Error(`Database insertion failed: ${insertError.message}`);
+      }
+
+      await supabase
+        .from("documents")
+        .update({
+          processing_status: "completed",
+          processed_at: new Date().toISOString(),
+        })
+        .eq("id", documentId);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          topics: fallbackTopics,
+          message: `Document processed with ${fallbackTopics.length} topics (text quality issues detected)`,
+          source: "enhanced_fallback"
+        }),
+        { 
+          headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        }
+      );
+    }
+
     // Try Gemini first
     console.log("🤖 Attempting Gemini AI processing...");
     const rawTopics = await generateTopicsWithRetry(cleanedText, meta, instruction);
@@ -380,11 +457,10 @@ serve(async (req) => {
       console.log("🛡️ Using fallback topic generation...");
       const fallbackTopics = createFallbackTopics(cleanedText, documentId);
       
-      // Merge any valid Gemini topics with fallback
       const combined = [...validTopics, ...fallbackTopics];
       validTopics = combined
         .map((topic, index) => ({ ...topic, topic_order: index }))
-        .slice(0, 6); // Limit total topics
+        .slice(0, 6);
     }
 
     if (validTopics.length === 0) {
@@ -427,7 +503,6 @@ serve(async (req) => {
   } catch (error) {
     console.error("❌ Processing failed:", error.message);
 
-    // Update document status to failed
     if (documentId) {
       try {
         await supabase

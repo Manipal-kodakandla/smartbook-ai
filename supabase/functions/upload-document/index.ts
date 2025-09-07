@@ -5,7 +5,8 @@ import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
 };
 
 // ✅ Clean extracted text
@@ -19,9 +20,10 @@ function cleanExtractedText(text: string) {
     .trim();
 }
 
-// ✅ Extract PDF text (simplified)
+// ✅ Hybrid PDF text extractor (Tj + TJ + BT/ET)
 async function extractPdfText(arrayBuffer: ArrayBuffer) {
   try {
+    console.log("🔄 Extracting PDF text with hybrid parser...");
     const pdfDoc = await PDFDocument.load(arrayBuffer);
     const pageCount = pdfDoc.getPageCount();
     console.log(`✅ PDF loaded. Pages: ${pageCount}`);
@@ -30,28 +32,60 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
     const pdfString = new TextDecoder("latin1").decode(pdfBytes);
 
     let extractedText = "";
-    const textMatches = pdfString.match(/\((.*?)\)\s*Tj/g) || [];
 
-    textMatches.forEach((match) => {
+    // --- Method 1: Simple Tj matches
+    const tjMatches = pdfString.match(/\((.*?)\)\s*Tj/g) || [];
+    tjMatches.forEach((match) => {
       const text = match.match(/\((.*?)\)/)?.[1];
       if (text && /[a-zA-Z0-9]/.test(text)) {
         extractedText += text + " ";
       }
     });
 
+    // --- Method 2: TJ arrays
+    const tjArrayMatches = pdfString.match(/\[(.*?)\]\s*TJ/g) || [];
+    tjArrayMatches.forEach((match) => {
+      const parts = match.match(/\((.*?)\)/g) || [];
+      parts.forEach((p) => {
+        const text = p.slice(1, -1);
+        if (/[a-zA-Z0-9]/.test(text)) extractedText += text + " ";
+      });
+    });
+
+    // --- Method 3: Capture raw BT..ET blocks
+    const blockMatches = pdfString.match(/BT([\s\S]*?)ET/g) || [];
+    blockMatches.forEach((block) => {
+      const textParts = block.match(/\((.*?)\)/g) || [];
+      textParts.forEach((p) => {
+        const text = p.slice(1, -1);
+        if (/[a-zA-Z0-9]/.test(text)) extractedText += text + " ";
+      });
+    });
+
+    // ✅ Clean final text
     extractedText = cleanExtractedText(extractedText);
+    console.log(`📄 Hybrid extraction length: ${extractedText.length}`);
+
+    if (extractedText.length < 50) {
+      return {
+        text: "[PDF_EXTRACTION_MINIMAL] Too little text extracted",
+        method: "hybrid",
+        status: "minimal_text",
+        confidence: "low",
+      };
+    }
 
     return {
-      text: extractedText || "[PDF_LIB_MINIMAL] Minimal text found",
-      method: "pdf-lib",
-      status: extractedText.length > 20 ? "success" : "minimal_text",
-      confidence: extractedText.length > 500 ? "high" : "medium",
+      text: extractedText,
+      method: "hybrid",
+      status: "success",
+      confidence: extractedText.length > 1000 ? "high" : "medium",
     };
   } catch (err) {
     console.error("❌ PDF extraction failed:", err);
     return {
-      text: "[PDF_LIB_ERROR] Extraction failed",
-      method: "pdf-lib",
+      text: "[PDF_EXTRACTION_ERROR] Failed",
+      method: "hybrid",
       status: "error",
       confidence: "low",
     };
@@ -75,17 +109,21 @@ serve(async (req) => {
 
     // 🔍 Auto-detect content type
     const contentType = req.headers.get("content-type") || "";
+
     if (contentType.includes("multipart/form-data")) {
       // ✅ Handle FormData upload
       const formData = await req.formData();
-      const file = formData.get("file") as File;
-      userId = formData.get("userId") as string;
+      const file = formData.get("file");
+      userId = formData.get("userId");
 
       if (!file || !userId) {
-        return new Response(JSON.stringify({ error: "File and userId are required" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ error: "File and userId are required" }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
       }
 
       fileName = file.name;
@@ -98,22 +136,30 @@ serve(async (req) => {
       const { fileBase64, name, type, size, userId: uid } = body;
 
       if (!fileBase64 || !uid) {
-        return new Response(JSON.stringify({ error: "fileBase64 and userId are required" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ error: "fileBase64 and userId are required" }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
       }
 
       userId = uid;
       fileName = name || "upload.txt";
       fileType = type || "application/octet-stream";
       fileSize = size || fileBase64.length;
-      fileBuffer = Uint8Array.from(atob(fileBase64), (c) => c.charCodeAt(0)).buffer;
+      fileBuffer = Uint8Array.from(atob(fileBase64), (c) =>
+        c.charCodeAt(0)
+      ).buffer;
     } else {
-      return new Response(JSON.stringify({ error: "Unsupported content type" }), {
-        status: 415,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: "Unsupported content type" }),
+        {
+          status: 415,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     // ✅ Upload to Supabase Storage
@@ -176,16 +222,12 @@ serve(async (req) => {
       `📊 Text analysis: length=${extractedText.length}, status=${extractionStatus}`
     );
 
-    // ⚡ Option A: Loosen the "useful text" condition
-    const hasUsefulText =
-      extractedText.length > 20 && extractionStatus !== "error";
-
+    const hasUsefulText = extractedText.length > 50 && extractionStatus === "success";
     console.log(`🔍 Has useful text: ${hasUsefulText}`);
 
     if (hasUsefulText) {
       console.log("🤖 Invoking AI processing...");
       try {
-        console.log("📤 Calling process-document function with documentId:", document.id);
         const { data: processResult, error: processError } =
           await supabase.functions.invoke("process-document", {
             body: {
@@ -255,9 +297,12 @@ serve(async (req) => {
     );
   } catch (error) {
     console.error("💥 Global error:", error);
-    return new Response(JSON.stringify({ error: error.message || String(error) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: error.message || String(error) }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   }
 });

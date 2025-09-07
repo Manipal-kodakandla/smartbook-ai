@@ -5,7 +5,8 @@ import { PDFDocument } from "https://esm.sh/pdf-lib@1.17.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
 };
 
 // ✅ Clean extracted text
@@ -19,10 +20,10 @@ function cleanExtractedText(text: string) {
     .trim();
 }
 
-// ✅ Hybrid PDF text extractor (Tj + TJ + BT/ET)
+// ✅ Hybrid PDF text extractor
 async function extractPdfText(arrayBuffer: ArrayBuffer) {
   try {
-    console.log("🔄 Extracting PDF text...");
+    console.log("🔄 Extracting PDF text with hybrid parser...");
     const pdfDoc = await PDFDocument.load(arrayBuffer);
     const pageCount = pdfDoc.getPageCount();
     console.log(`✅ PDF loaded. Pages: ${pageCount}`);
@@ -32,11 +33,13 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
 
     let extractedText = "";
 
-    // --- Method 1: Simple Tj matches
+    // --- Method 1: Tj matches
     const tjMatches = pdfString.match(/\((.*?)\)\s*Tj/g) || [];
     tjMatches.forEach((match) => {
       const text = match.match(/\((.*?)\)/)?.[1];
-      if (text && /[a-zA-Z0-9]/.test(text)) extractedText += text + " ";
+      if (text && /[a-zA-Z0-9]/.test(text)) {
+        extractedText += text + " ";
+      }
     });
 
     // --- Method 2: TJ arrays
@@ -49,7 +52,7 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
       });
     });
 
-    // --- Method 3: Capture raw BT..ET blocks
+    // --- Method 3: BT..ET blocks
     const blockMatches = pdfString.match(/BT([\s\S]*?)ET/g) || [];
     blockMatches.forEach((block) => {
       const textParts = block.match(/\((.*?)\)/g) || [];
@@ -59,8 +62,9 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
       });
     });
 
+    // ✅ Clean final text
     extractedText = cleanExtractedText(extractedText);
-    console.log(`📄 Extracted text length: ${extractedText.length}`);
+    console.log(`📄 Hybrid extraction length: ${extractedText.length}`);
 
     if (extractedText.length < 50) {
       return {
@@ -89,7 +93,9 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
 
   try {
     console.log("📤 Upload request received");
@@ -100,37 +106,72 @@ serve(async (req) => {
     );
 
     let fileName, fileType, fileSize, fileBuffer, userId;
+
+    // 🔍 Auto-detect content type
     const contentType = req.headers.get("content-type") || "";
 
     if (contentType.includes("multipart/form-data")) {
+      // ✅ FormData upload
       const formData = await req.formData();
       const file = formData.get("file");
       userId = formData.get("userId");
 
       if (!file || !userId) {
-        return new Response(JSON.stringify({ error: "File and userId are required" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ error: "File and userId are required" }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
       }
 
       fileName = file.name;
       fileType = file.type || "application/octet-stream";
       fileSize = file.size;
       fileBuffer = await file.arrayBuffer();
+    } else if (contentType.includes("application/json")) {
+      // ✅ JSON base64 upload
+      const body = await req.json();
+      const { fileBase64, name, type, size, userId: uid } = body;
+
+      if (!fileBase64 || !uid) {
+        return new Response(
+          JSON.stringify({ error: "fileBase64 and userId are required" }),
+          {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
+        );
+      }
+
+      userId = uid;
+      fileName = name || "upload.txt";
+      fileType = type || "application/octet-stream";
+      fileSize = size || fileBase64.length;
+      fileBuffer = Uint8Array.from(atob(fileBase64), (c) =>
+        c.charCodeAt(0)
+      ).buffer;
     } else {
-      return new Response(JSON.stringify({ error: "Unsupported content type" }), {
-        status: 415,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: "Unsupported content type" }),
+        {
+          status: 415,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     // ✅ Upload to Supabase Storage
-    await supabase.storage
+    const { error: storageError } = await supabase.storage
       .from("documents")
       .upload(`${userId}/${fileName}`, new Blob([fileBuffer], { type: fileType }), {
         upsert: true,
       });
+
+    if (storageError) {
+      console.error("⚠️ Storage upload failed:", storageError);
+    }
 
     // ✅ Extract text
     let extractedText = "";
@@ -144,9 +185,16 @@ serve(async (req) => {
       extractionMethod = pdfResult.method;
       extractionStatus = pdfResult.status;
       extractionConfidence = pdfResult.confidence;
+    } else if (fileType.startsWith("text/")) {
+      extractedText = cleanExtractedText(new TextDecoder().decode(fileBuffer));
+      extractionMethod = "text-decoder";
+      extractionConfidence = extractedText.length > 200 ? "high" : "medium";
+    } else {
+      extractedText = `[UNSUPPORTED] File type '${fileType}'`;
+      extractionStatus = "unsupported";
     }
 
-    // ✅ Insert document into DB
+    // ✅ Insert into DB
     const { data: document, error: docError } = await supabase
       .from("documents")
       .insert([
@@ -169,32 +217,90 @@ serve(async (req) => {
     if (docError) throw new Error(`DB insert failed: ${docError.message}`);
     console.log(`✅ Document saved: ${document.id}`);
 
-    // ✅ Trigger AI processing if text looks useful
+    // ✅ Trigger AI function if enough text
+    console.log(
+      `📊 Text analysis: length=${extractedText.length}, status=${extractionStatus}`
+    );
+
     const hasUsefulText = extractedText.length > 50 && extractionStatus === "success";
+    console.log(`🔍 Has useful text: ${hasUsefulText}`);
+
     if (hasUsefulText) {
-      await supabase.functions.invoke("process-document", {
-        body: {
-          documentId: document.id,
-          extractedText: extractedText.slice(0, 120_000),
-          meta: { fileName, fileType, extractionMethod, extractionStatus, extractionConfidence },
-          instruction: "Summaries must stay faithful to extracted text. If unclear, mark it.",
-        },
-      });
+      console.log("🤖 Invoking AI processing...");
+      const invokeAI = async (retry = false) => {
+        const { data: processResult, error: processError } =
+          await supabase.functions.invoke("process-document", {
+            body: {
+              documentId: document.id,
+              extractedText: extractedText.slice(0, 120_000),
+              meta: {
+                fileName,
+                fileType,
+                extractionMethod,
+                extractionStatus,
+                extractionConfidence,
+              },
+              instruction:
+                "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, infer the best possible topics clearly.",
+            },
+          });
+
+        if (processError) {
+          console.error(`❌ Process-document error${retry ? " (retry)" : ""}:`, processError);
+          if (!retry) {
+            console.log("🔁 Retrying AI once...");
+            return await invokeAI(true);
+          } else {
+            await supabase
+              .from("documents")
+              .update({
+                processing_status: "failed",
+                processed_at: new Date().toISOString(),
+              })
+              .eq("id", document.id);
+          }
+        } else {
+          console.log("✅ Process document function succeeded:", processResult);
+        }
+      };
+
+      await invokeAI();
     } else {
-      await supabase.from("documents").update({
-        processing_status: "completed",
-        processed_at: new Date().toISOString(),
-      }).eq("id", document.id);
+      console.log("⏭️ Skipping AI processing - insufficient useful text");
+      await supabase
+        .from("documents")
+        .update({
+          processing_status: "completed",
+          processed_at: new Date().toISOString(),
+        })
+        .eq("id", document.id);
     }
 
-    return new Response(JSON.stringify({ success: true, document }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        success: true,
+        document,
+        extraction: {
+          status: extractionStatus,
+          method: extractionMethod,
+          confidence: extractionConfidence,
+        },
+        message: hasUsefulText
+          ? `✅ Extracted with ${extractionMethod} (confidence: ${extractionConfidence}). AI started.`
+          : `📄 Uploaded but insufficient text (status: ${extractionStatus}).`,
+      }),
+      {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   } catch (error) {
     console.error("💥 Global error:", error);
-    return new Response(JSON.stringify({ error: error.message || String(error) }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: error.message || String(error) }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
+    );
   }
 });

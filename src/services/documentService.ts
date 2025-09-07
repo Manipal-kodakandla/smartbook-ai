@@ -97,16 +97,22 @@ export const documentService = {
   },
 
   async getDocumentTopics(documentId: string): Promise<Topic[]> {
+    console.log('🔍 Fetching topics for document ID:', documentId);
+    
     const { data, error } = await supabase
       .from('topics')
       .select('*')
       .eq('document_id', documentId)
       .order('topic_order', { ascending: true });
 
+    console.log('📊 Topics query result:', { data, error, count: data?.length });
+
     if (error) {
+      console.error('❌ Error fetching topics:', error);
       throw new Error(error.message);
     }
 
+    console.log('✅ Retrieved topics:', data);
     return data || [];
   },
 

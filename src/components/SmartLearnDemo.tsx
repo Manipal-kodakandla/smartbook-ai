@@ -24,7 +24,14 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
   // Load topics when document is selected and poll for processing completion
   useEffect(() => {
     if (selectedDocument) {
+      console.log('🔄 SmartLearnDemo: Document selected:', {
+        id: selectedDocument.id,
+        title: selectedDocument.title,
+        status: selectedDocument.processing_status
+      });
+      
       if (selectedDocument.processing_status === 'completed') {
+        console.log('✅ Document already completed, loading topics immediately...');
         loadTopics(selectedDocument.id);
       } else {
         // Poll for processing completion
@@ -34,7 +41,11 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
             console.log('🔄 Polling for document processing completion...');
             const updatedDocs = await documentService.getUserDocuments(user?.id || '');
             const updatedDoc = updatedDocs.find(doc => doc.id === selectedDocument.id);
-            console.log('📊 Current document status:', updatedDoc?.processing_status);
+            console.log('📊 Polling result - Updated document:', {
+              found: !!updatedDoc,
+              status: updatedDoc?.processing_status,
+              id: updatedDoc?.id
+            });
             if (updatedDoc?.processing_status === 'completed') {
               console.log('✅ Document processing completed, loading topics...');
               clearInterval(pollInterval);
@@ -50,13 +61,17 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
 
         return () => clearInterval(pollInterval);
       }
+    } else {
+      console.log('⚠️ No document selected in SmartLearnDemo');
     }
   }, [selectedDocument, user?.id]);
 
   const loadTopics = async (documentId: string) => {
     try {
+      console.log('📚 Loading topics for document:', documentId);
       setLoading(true);
       const documentTopics = await documentService.getDocumentTopics(documentId);
+      console.log('📋 Topics loaded in component:', documentTopics.length, 'topics');
       setTopics(documentTopics);
       setCurrentTopic(0);
       setShowQuiz(false);
@@ -67,7 +82,7 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
       setCorrectAnswers(0);
       setTotalQuizzes(0);
     } catch (error) {
-      console.error('Failed to load topics:', error);
+      console.error('❌ Failed to load topics:', error);
     } finally {
       setLoading(false);
     }
@@ -192,7 +207,17 @@ const SmartLearnDemo = ({ selectedDocument }: { selectedDocument?: Document }) =
                   <Brain className="w-6 h-6 text-primary" />
                 </div>
                 <h3 className="text-lg font-medium mb-2">No Topics Found</h3>
-                <p className="text-muted-foreground">Unable to generate topics from this document. Please try uploading a different file.</p>
+                <p className="text-muted-foreground mb-4">
+                  Topics may still be loading. Check the console for details.
+                </p>
+                <Button 
+                  variant="outline" 
+                  onClick={() => loadTopics(selectedDocument.id)}
+                  className="gap-2"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Refresh Topics
+                </Button>
               </div>
             ) : (
               <>

@@ -19,10 +19,10 @@ function cleanExtractedText(text: string) {
     .trim();
 }
 
-// ✅ Hybrid PDF text extractor
+// ✅ Hybrid PDF text extractor (Tj + TJ + BT/ET)
 async function extractPdfText(arrayBuffer: ArrayBuffer) {
   try {
-    console.log("🔄 Extracting PDF text with hybrid parser...");
+    console.log("🔄 Extracting PDF text...");
     const pdfDoc = await PDFDocument.load(arrayBuffer);
     const pageCount = pdfDoc.getPageCount();
     console.log(`✅ PDF loaded. Pages: ${pageCount}`);
@@ -36,9 +36,7 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
     const tjMatches = pdfString.match(/\((.*?)\)\s*Tj/g) || [];
     tjMatches.forEach((match) => {
       const text = match.match(/\((.*?)\)/)?.[1];
-      if (text && /[a-zA-Z0-9]/.test(text)) {
-        extractedText += text + " ";
-      }
+      if (text && /[a-zA-Z0-9]/.test(text)) extractedText += text + " ";
     });
 
     // --- Method 2: TJ arrays
@@ -61,9 +59,8 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
       });
     });
 
-    // ✅ Clean final text
     extractedText = cleanExtractedText(extractedText);
-    console.log(`📄 Hybrid extraction length: ${extractedText.length}`);
+    console.log(`📄 Extracted text length: ${extractedText.length}`);
 
     if (extractedText.length < 50) {
       return {
@@ -92,12 +89,11 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
 }
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
     console.log("📤 Upload request received");
+
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
@@ -110,30 +106,18 @@ serve(async (req) => {
       const formData = await req.formData();
       const file = formData.get("file");
       userId = formData.get("userId");
+
       if (!file || !userId) {
         return new Response(JSON.stringify({ error: "File and userId are required" }), {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+
       fileName = file.name;
       fileType = file.type || "application/octet-stream";
       fileSize = file.size;
       fileBuffer = await file.arrayBuffer();
-    } else if (contentType.includes("application/json")) {
-      const body = await req.json();
-      const { fileBase64, name, type, size, userId: uid } = body;
-      if (!fileBase64 || !uid) {
-        return new Response(JSON.stringify({ error: "fileBase64 and userId are required" }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      userId = uid;
-      fileName = name || "upload.txt";
-      fileType = type || "application/octet-stream";
-      fileSize = size || fileBase64.length;
-      fileBuffer = Uint8Array.from(atob(fileBase64), (c) => c.charCodeAt(0)).buffer;
     } else {
       return new Response(JSON.stringify({ error: "Unsupported content type" }), {
         status: 415,
@@ -142,11 +126,11 @@ serve(async (req) => {
     }
 
     // ✅ Upload to Supabase Storage
-    await supabase.storage.from("documents").upload(
-      `${userId}/${fileName}`,
-      new Blob([fileBuffer], { type: fileType }),
-      { upsert: true }
-    );
+    await supabase.storage
+      .from("documents")
+      .upload(`${userId}/${fileName}`, new Blob([fileBuffer], { type: fileType }), {
+        upsert: true,
+      });
 
     // ✅ Extract text
     let extractedText = "";
@@ -160,46 +144,40 @@ serve(async (req) => {
       extractionMethod = pdfResult.method;
       extractionStatus = pdfResult.status;
       extractionConfidence = pdfResult.confidence;
-    } else if (fileType.startsWith("text/")) {
-      extractedText = cleanExtractedText(new TextDecoder().decode(fileBuffer));
-      extractionMethod = "text-decoder";
-      extractionConfidence = extractedText.length > 200 ? "high" : "medium";
-    } else {
-      extractedText = `[UNSUPPORTED] File type '${fileType}'`;
-      extractionStatus = "unsupported";
     }
 
-    // ✅ Insert into DB
+    // ✅ Insert document into DB
     const { data: document, error: docError } = await supabase
       .from("documents")
-      .insert([{
-        user_id: userId,
-        title: fileName.replace(/\.[^/.]+$/, ""),
-        file_name: fileName,
-        file_type: fileType,
-        file_size: fileSize,
-        extracted_text: extractedText,
-        processing_status: "processing",
-        extraction_status: extractionStatus,
-        extraction_method: extractionMethod,
-        extraction_confidence: extractionConfidence,
-      }])
+      .insert([
+        {
+          user_id: userId,
+          title: fileName.replace(/\.[^/.]+$/, ""),
+          file_name: fileName,
+          file_type: fileType,
+          file_size: fileSize,
+          extracted_text: extractedText,
+          processing_status: "processing",
+          extraction_status: extractionStatus,
+          extraction_method: extractionMethod,
+          extraction_confidence: extractionConfidence,
+        },
+      ])
       .select()
       .single();
 
     if (docError) throw new Error(`DB insert failed: ${docError.message}`);
-    console.log(`✅ Document saved: ${document.id}, extracted length=${extractedText.length}`);
+    console.log(`✅ Document saved: ${document.id}`);
 
-    // ✅ Trigger AI function
-    const hasUsefulText = extractedText.length > 20 && extractionStatus !== "error";
+    // ✅ Trigger AI processing if text looks useful
+    const hasUsefulText = extractedText.length > 50 && extractionStatus === "success";
     if (hasUsefulText) {
       await supabase.functions.invoke("process-document", {
         body: {
           documentId: document.id,
           extractedText: extractedText.slice(0, 120_000),
           meta: { fileName, fileType, extractionMethod, extractionStatus, extractionConfidence },
-          instruction:
-            "Summaries and answers must stay faithful to extracted text. Ignore formatting errors. If text is incomplete, say so clearly.",
+          instruction: "Summaries must stay faithful to extracted text. If unclear, mark it.",
         },
       });
     } else {

@@ -239,7 +239,6 @@ function analyzeTextQuality(text: string) {
     return { quality: "poor", shouldProcess: false, reason: "No text content" };
   }
 
-  // Early detection of extraction errors
   if (text.startsWith("[PDF_EXTRACTION_")) {
     return { 
       quality: "poor", 
@@ -251,17 +250,15 @@ function analyzeTextQuality(text: string) {
   const words = text.split(/\s+/).filter(w => w.length > 0);
   const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
   
-  // Enhanced meaningful word detection
   const meaningfulWords = words.filter(word => {
     const clean = word.replace(/[^\w]/g, '');
     return clean.length >= 3 && 
            clean.length <= 20 &&
-           /^[a-zA-Z]+$/.test(clean) && // Only letters
-           /[aeiouAEIOU]/.test(clean) && // Contains vowels
-           !/^[A-Z]+$/.test(clean); // Not all uppercase
+           /^[a-zA-Z]+$/.test(clean) && 
+           /[aeiouAEIOU]/.test(clean) && 
+           !/^[A-Z]+$/.test(clean);
   });
   
-  // Detect garbage patterns
   const garbageWords = words.filter(word => {
     const clean = word.replace(/[^\w]/g, '');
     return clean.length > 2 && 
@@ -289,39 +286,42 @@ function analyzeTextQuality(text: string) {
     sampleWords: words.slice(0, 5)
   });
 
-  // Quality decision logic
-  if (stats.length < 50) {
+  // More lenient quality decision logic
+  if (stats.length < 30) {
     return { quality: "poor", shouldProcess: false, reason: "Text too short", stats };
   }
   
-  if (stats.meaningfulRatio < 0.3) {
-    return { quality: "poor", shouldProcess: false, reason: "Too few meaningful words", stats };
-  }
-  
-  if (stats.garbageRatio > 0.4) {
-    return { quality: "poor", shouldProcess: false, reason: "Too much corrupted text", stats };
-  }
-  
-  if (stats.words < 10) {
+  if (stats.words < 5) {
     return { quality: "poor", shouldProcess: false, reason: "Too few words", stats };
   }
 
-  // Determine quality level
-  let quality = "fair";
-  if (stats.length > 1000 && stats.sentences > 5 && stats.meaningfulRatio > 0.8) {
-    quality = "excellent";
-  } else if (stats.length > 300 && stats.sentences > 2 && stats.meaningfulRatio > 0.6) {
-    quality = "good";
+  // If we have decent amount of meaningful words, try processing
+  if (stats.meaningfulWords >= 100 && stats.meaningfulRatio > 0.4) {
+    return { 
+      quality: "good", 
+      shouldProcess: true, 
+      reason: `Has ${stats.meaningfulWords} meaningful words (${(stats.meaningfulRatio * 100).toFixed(0)}%)`,
+      stats 
+    };
+  }
+
+  // Even with some garbage, if meaningful ratio is decent, try it
+  if (stats.meaningfulRatio > 0.6) {
+    return { 
+      quality: "fair", 
+      shouldProcess: true, 
+      reason: `Meaningful ratio: ${(stats.meaningfulRatio * 100).toFixed(0)}%`,
+      stats 
+    };
   }
 
   return { 
-    quality, 
-    shouldProcess: true, 
-    reason: `Quality: ${quality} (meaningful: ${(stats.meaningfulRatio * 100).toFixed(0)}%, garbage: ${(stats.garbageRatio * 100).toFixed(0)}%)`,
+    quality: "poor", 
+    shouldProcess: false, 
+    reason: `Too few meaningful words: ${stats.meaningfulWords}/${stats.words} (${(stats.meaningfulRatio * 100).toFixed(0)}%)`,
     stats 
   };
 }
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });

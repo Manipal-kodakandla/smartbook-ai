@@ -9,7 +9,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
-// 🧹 Enhanced text cleaning with better Unicode handling
+// Enhanced text cleaning with better Unicode handling
 function cleanExtractedText(text: string): string {
   if (!text || typeof text !== "string") return "";
   
@@ -34,13 +34,13 @@ function cleanExtractedText(text: string): string {
     .trim();
 }
 
-// 🔍 Enhanced PDF text extraction with multiple fallback methods
+// Enhanced PDF text extraction with better garbage filtering
 async function extractPdfText(arrayBuffer: ArrayBuffer) {
   try {
-    console.log("🔄 Starting enhanced PDF text extraction...");
+    console.log("Starting enhanced PDF text extraction...");
     const pdfDoc = await PDFDocument.load(arrayBuffer);
     const pageCount = pdfDoc.getPageCount();
-    console.log(`✅ PDF loaded successfully. Pages: ${pageCount}`);
+    console.log(`PDF loaded successfully. Pages: ${pageCount}`);
 
     const pdfBytes = await pdfDoc.save();
     const pdfString = new TextDecoder("latin1").decode(pdfBytes);
@@ -48,10 +48,11 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
     let extractedText = "";
     let extractionMethods = [];
 
-    // Method 1: Enhanced Tj operator extraction
-    console.log("🔍 Extracting text using Tj operators...");
+    // Method 1: Enhanced Tj operator extraction with better filtering
+    console.log("Method 1: Tj operators...");
     const tjMatches = pdfString.match(/\(((?:[^()\\]|\\.)*)\)\s*Tj/g) || [];
     let tjText = "";
+    
     tjMatches.forEach((match) => {
       const textMatch = match.match(/\(((?:[^()\\]|\\.)*)\)/);
       if (textMatch && textMatch[1]) {
@@ -63,173 +64,260 @@ async function extractPdfText(arrayBuffer: ArrayBuffer) {
           .replace(/\\\)/g, ")")
           .replace(/\\\\/g, "\\");
         
-        if (text && /[a-zA-Z0-9]/.test(text) && text.length > 1) {
-          tjText += text + " ";
+        // Enhanced filtering - only keep text that looks like real words
+        const words = text.split(/\s+/);
+        const goodWords = words.filter(word => {
+          const clean = word.replace(/[^\w]/g, '');
+          return clean.length >= 2 && 
+                 clean.length <= 25 &&
+                 !/^[A-Z0-9]{4,}$/.test(clean) && // Skip all-caps codes
+                 /[aeiouAEIOU]/.test(clean) && // Must contain vowels
+                 !/^[0-9]+$/.test(clean) && // Not pure numbers
+                 clean.match(/[a-zA-Z]/g)?.length > clean.length * 0.5; // Mostly letters
+        });
+        
+        if (goodWords.length > 0) {
+          tjText += goodWords.join(" ") + " ";
         }
       }
     });
-    if (tjText.length > 50) {
+    
+    if (tjText.trim().length > 50) {
       extractedText += tjText;
       extractionMethods.push("Tj");
+      console.log("Tj extraction successful:", tjText.length, "chars");
     }
 
     // Method 2: Enhanced TJ array extraction
-    console.log("🔍 Extracting text using TJ arrays...");
+    console.log("Method 2: TJ arrays...");
     const tjArrayMatches = pdfString.match(/\[((?:[^\[\]\\]|\\.)*)\]\s*TJ/g) || [];
     let tjArrayText = "";
+    
     tjArrayMatches.forEach((match) => {
       const arrayContent = match.match(/\[((?:[^\[\]\\]|\\.)*)\]/);
       if (arrayContent && arrayContent[1]) {
         const textParts = arrayContent[1].match(/\(((?:[^()\\]|\\.)*)\)/g) || [];
-        textParts.forEach((part) => {
-          const text = part.slice(1, -1);
-          if (text && /[a-zA-Z0-9]/.test(text) && text.length > 1) {
-            tjArrayText += text + " ";
-          }
-        });
+        const goodParts = textParts
+          .map(part => part.slice(1, -1))
+          .filter(text => {
+            const clean = text.replace(/[^\w\s]/g, '');
+            return clean.length >= 2 && 
+                   /[aeiouAEIOU]/.test(clean) &&
+                   !/^[A-Z0-9\s]{4,}$/.test(clean);
+          });
+        
+        if (goodParts.length > 0) {
+          tjArrayText += goodParts.join(" ") + " ";
+        }
       }
     });
-    if (tjArrayText.length > 50) {
+    
+    if (tjArrayText.trim().length > 50) {
       extractedText += " " + tjArrayText;
       extractionMethods.push("TJ");
+      console.log("TJ array extraction successful:", tjArrayText.length, "chars");
     }
 
     // Method 3: Enhanced BT...ET block extraction
-    console.log("🔍 Extracting text using BT...ET blocks...");
+    console.log("Method 3: BT...ET blocks...");
     const blockMatches = pdfString.match(/BT([\s\S]*?)ET/g) || [];
     let blockText = "";
+    
     blockMatches.forEach((block) => {
-      // Extract text from various text-showing operators
       const textOperators = block.match(/\(((?:[^()\\]|\\.)*)\)\s*(?:Tj|TJ|'|")/g) || [];
-      textOperators.forEach((op) => {
-        const text = op.match(/\(((?:[^()\\]|\\.)*)\)/)?.[1];
-        if (text && /[a-zA-Z0-9]/.test(text) && text.length > 1) {
-          blockText += text + " ";
-        }
-      });
+      const goodTexts = textOperators
+        .map(op => {
+          const text = op.match(/\(((?:[^()\\]|\\.)*)\)/)?.[1];
+          if (!text) return "";
+          
+          return text.replace(/\\[rnt]/g, " ");
+        })
+        .filter(text => {
+          const clean = text.replace(/[^\w\s]/g, '').trim();
+          return clean.length >= 3 && 
+                 /[aeiouAEIOU]/.test(clean) &&
+                 !/^[A-Z0-9\s]+$/.test(clean) &&
+                 clean.split(/\s+/).length <= 20; // Not too long
+        });
+      
+      if (goodTexts.length > 0) {
+        blockText += goodTexts.join(" ") + " ";
+      }
     });
-    if (blockText.length > 50) {
+    
+    if (blockText.trim().length > 50) {
       extractedText += " " + blockText;
       extractionMethods.push("BT-ET");
+      console.log("BT-ET extraction successful:", blockText.length, "chars");
     }
 
-    // Method 4: Stream object extraction (fallback)
+    // Method 4: Stream object extraction (fallback for difficult PDFs)
     if (extractedText.length < 100) {
-      console.log("🔍 Using stream object fallback extraction...");
+      console.log("Method 4: Stream object fallback...");
       const streamMatches = pdfString.match(/stream\s*([\s\S]*?)\s*endstream/g) || [];
       let streamText = "";
+      
       streamMatches.forEach((stream) => {
         const content = stream.replace(/^stream\s*|\s*endstream$/g, "");
-        const textMatches = content.match(/\b[A-Za-z][A-Za-z0-9\s]{2,}[A-Za-z0-9]\b/g) || [];
+        const textMatches = content.match(/\b[A-Za-z][A-Za-z\s]{2,}[A-Za-z]\b/g) || [];
         textMatches.forEach((match) => {
-          if (match.length > 3 && !/^[0-9\s]+$/.test(match)) {
+          if (match.length > 3 && 
+              !/^[0-9\s]+$/.test(match) && 
+              /[aeiouAEIOU]/.test(match)) {
             streamText += match + " ";
           }
         });
       });
+      
       if (streamText.length > 50) {
         extractedText += " " + streamText;
         extractionMethods.push("Stream");
+        console.log("Stream extraction successful:", streamText.length, "chars");
       }
     }
 
-    // Clean and validate extracted text
+    // Final text cleaning and validation
     extractedText = cleanExtractedText(extractedText);
-    console.log(`📄 Extracted text length: ${extractedText.length}`);
-    console.log(`🔧 Methods used: ${extractionMethods.join(", ")}`);
 
-    // Determine extraction quality
+    // Quality assessment
+    console.log(`Total extraction methods: ${extractionMethods.join(", ")}`);
+    console.log(`Final extracted length: ${extractedText.length}`);
+    
+    // Enhanced quality check
+    const words = extractedText.split(/\s+/);
+    const realWords = words.filter(word => {
+      const clean = word.replace(/[^\w]/g, '');
+      return clean.length >= 3 && 
+             /[aeiouAEIOU]/.test(clean) &&
+             /^[a-zA-Z]{3,}$/.test(clean);
+    });
+    
+    const qualityRatio = realWords.length / Math.max(words.length, 1);
+    console.log(`Quality ratio: ${qualityRatio.toFixed(2)} (${realWords.length}/${words.length})`);
+    console.log(`Sample words: ${words.slice(0, 8).join(", ")}`);
+    
     let confidence = "low";
     let status = "success";
     
-    if (extractedText.length > 2000) {
-      confidence = "high";
-    } else if (extractedText.length > 500) {
-      confidence = "medium";
-    } else if (extractedText.length < 50) {
+    if (extractedText.length < 50 || qualityRatio < 0.3) {
       status = "minimal_text";
-      extractedText = "[PDF_EXTRACTION_MINIMAL] Limited text content extracted from PDF";
-    }
-
-    // Check if text looks meaningful
-    const words = extractedText.split(/\s+/).filter(w => w.length > 2);
-    const meaningfulWords = words.filter(w => /^[a-zA-Z]+$/.test(w));
-    const meaningfulRatio = meaningfulWords.length / Math.max(words.length, 1);
-    
-    if (meaningfulRatio < 0.3 && extractedText.length > 50) {
-      console.warn("⚠️ Text may contain encoding issues or be corrupted");
-      confidence = "low";
+      extractedText = "[PDF_EXTRACTION_MINIMAL] Limited readable text found in PDF";
+      console.log("Poor quality extraction detected");
+    } else if (qualityRatio > 0.7 && extractedText.length > 500) {
+      confidence = "high";
+    } else if (qualityRatio > 0.5 && extractedText.length > 200) {
+      confidence = "medium";
     }
 
     return {
       text: extractedText,
-      method: `hybrid(${extractionMethods.join(",")})`,
+      method: `enhanced(${extractionMethods.join(",")})`,
       status: status,
       confidence: confidence,
       pages: pageCount,
-      methods_used: extractionMethods.length
+      methods_used: extractionMethods.length,
+      quality_ratio: qualityRatio
     };
 
   } catch (err) {
-    console.error("❌ PDF extraction failed:", err.message);
+    console.error("PDF extraction failed:", err.message);
     return {
       text: "[PDF_EXTRACTION_ERROR] Failed to extract text from PDF",
-      method: "hybrid",
+      method: "enhanced",
       status: "error",
       confidence: "low",
       pages: 0,
-      methods_used: 0
+      methods_used: 0,
+      quality_ratio: 0
     };
   }
 }
 
-// 📊 Analyze text quality for processing decisions
+// Enhanced text quality analysis
 function analyzeTextQuality(text: string) {
   if (!text || typeof text !== "string") {
     return { quality: "poor", shouldProcess: false, reason: "No text content" };
   }
 
+  // Early detection of extraction errors
+  if (text.startsWith("[PDF_EXTRACTION_")) {
+    return { 
+      quality: "poor", 
+      shouldProcess: false, 
+      reason: "PDF extraction failed or minimal text found" 
+    };
+  }
+
   const words = text.split(/\s+/).filter(w => w.length > 0);
   const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
-  const meaningfulWords = words.filter(w => /^[a-zA-Z]{2,}$/.test(w));
+  
+  // Enhanced meaningful word detection
+  const meaningfulWords = words.filter(word => {
+    const clean = word.replace(/[^\w]/g, '');
+    return clean.length >= 3 && 
+           clean.length <= 20 &&
+           /^[a-zA-Z]+$/.test(clean) && // Only letters
+           /[aeiouAEIOU]/.test(clean) && // Contains vowels
+           !/^[A-Z]+$/.test(clean); // Not all uppercase
+  });
+  
+  // Detect garbage patterns
+  const garbageWords = words.filter(word => {
+    const clean = word.replace(/[^\w]/g, '');
+    return clean.length > 2 && 
+           /[A-Z]/.test(clean) && 
+           /[a-z]/.test(clean) && 
+           (/[0-9]/.test(clean) || 
+            (clean.length <= 6 && !/^[A-Z][a-z]+$/.test(clean)));
+  });
   
   const stats = {
     length: text.length,
     words: words.length,
     sentences: sentences.length,
     meaningfulWords: meaningfulWords.length,
-    avgWordLength: meaningfulWords.reduce((sum, w) => sum + w.length, 0) / Math.max(meaningfulWords.length, 1),
-    meaningfulRatio: meaningfulWords.length / Math.max(words.length, 1)
+    garbageWords: garbageWords.length,
+    meaningfulRatio: meaningfulWords.length / Math.max(words.length, 1),
+    garbageRatio: garbageWords.length / Math.max(words.length, 1),
+    avgWordLength: words.reduce((sum, w) => sum + w.length, 0) / Math.max(words.length, 1)
   };
 
-  console.log("📊 Text quality analysis:", stats);
+  console.log("Enhanced text quality analysis:", {
+    ...stats,
+    meaningfulRatio: stats.meaningfulRatio.toFixed(2),
+    garbageRatio: stats.garbageRatio.toFixed(2),
+    sampleWords: words.slice(0, 5)
+  });
 
-  // Determine if we should process this text
+  // Quality decision logic
   if (stats.length < 50) {
     return { quality: "poor", shouldProcess: false, reason: "Text too short", stats };
   }
   
-  if (stats.meaningfulRatio < 0.2) {
-    return { quality: "poor", shouldProcess: false, reason: "Too much garbage text", stats };
+  if (stats.meaningfulRatio < 0.3) {
+    return { quality: "poor", shouldProcess: false, reason: "Too few meaningful words", stats };
+  }
+  
+  if (stats.garbageRatio > 0.4) {
+    return { quality: "poor", shouldProcess: false, reason: "Too much corrupted text", stats };
   }
   
   if (stats.words < 10) {
     return { quality: "poor", shouldProcess: false, reason: "Too few words", stats };
   }
 
-  let quality = "good";
-  if (stats.length > 1000 && stats.sentences > 5 && stats.meaningfulRatio > 0.6) {
+  // Determine quality level
+  let quality = "fair";
+  if (stats.length > 1000 && stats.sentences > 5 && stats.meaningfulRatio > 0.8) {
     quality = "excellent";
-  } else if (stats.length > 200 && stats.sentences > 2) {
+  } else if (stats.length > 300 && stats.sentences > 2 && stats.meaningfulRatio > 0.6) {
     quality = "good";
-  } else {
-    quality = "fair";
   }
 
   return { 
     quality, 
     shouldProcess: true, 
-    reason: `Quality: ${quality}`,
+    reason: `Quality: ${quality} (meaningful: ${(stats.meaningfulRatio * 100).toFixed(0)}%, garbage: ${(stats.garbageRatio * 100).toFixed(0)}%)`,
     stats 
   };
 }
@@ -240,7 +328,7 @@ serve(async (req) => {
   }
 
   try {
-    console.log("📤 Document upload request received");
+    console.log("Document upload request received");
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
@@ -306,10 +394,10 @@ serve(async (req) => {
       );
     }
 
-    console.log(`📄 Processing file: ${fileName} (${fileType}, ${fileSize} bytes)`);
+    console.log(`Processing file: ${fileName} (${fileType}, ${fileSize} bytes)`);
 
     // Upload to Supabase Storage
-    console.log("☁️ Uploading to Supabase storage...");
+    console.log("Uploading to Supabase storage...");
     const { error: storageError } = await supabase.storage
       .from("documents")
       .upload(`${userId}/${fileName}`, new Blob([fileBuffer], { type: fileType }), {
@@ -317,7 +405,7 @@ serve(async (req) => {
       });
 
     if (storageError) {
-      console.warn("⚠️ Storage upload failed:", storageError.message);
+      console.warn("Storage upload failed:", storageError.message);
       // Continue processing even if storage fails
     }
 
@@ -328,10 +416,10 @@ serve(async (req) => {
     let extractionConfidence = "low";
     let extractionMeta = {};
 
-    console.log("🔄 Starting text extraction...");
+    console.log("Starting text extraction...");
 
     if (fileType === "application/pdf") {
-      console.log("📄 Processing PDF file...");
+      console.log("Processing PDF file...");
       const pdfResult = await extractPdfText(fileBuffer);
       extractedText = pdfResult.text;
       extractionMethod = pdfResult.method;
@@ -339,11 +427,12 @@ serve(async (req) => {
       extractionConfidence = pdfResult.confidence;
       extractionMeta = {
         pages: pdfResult.pages,
-        methods_used: pdfResult.methods_used
+        methods_used: pdfResult.methods_used,
+        quality_ratio: pdfResult.quality_ratio
       };
 
     } else if (fileType.startsWith("text/") || fileType === "application/json") {
-      console.log("📝 Processing text file...");
+      console.log("Processing text file...");
       const textContent = new TextDecoder("utf-8").decode(fileBuffer);
       extractedText = cleanExtractedText(textContent);
       extractionMethod = "text-decoder";
@@ -352,8 +441,7 @@ serve(async (req) => {
       extractionMeta = { encoding: "utf-8" };
 
     } else if (fileType.includes("plain") || !fileType.includes("/")) {
-      console.log("📋 Processing as plain text...");
-      // Try to decode as text anyway
+      console.log("Processing as plain text...");
       try {
         const textContent = new TextDecoder("utf-8").decode(fileBuffer);
         extractedText = cleanExtractedText(textContent);
@@ -365,17 +453,17 @@ serve(async (req) => {
       }
 
     } else {
-      console.log("❌ Unsupported file type for text extraction");
+      console.log("Unsupported file type for text extraction");
       extractedText = `[UNSUPPORTED_TYPE] File type '${fileType}' is not supported for text extraction`;
       extractionStatus = "unsupported";
     }
 
     // Analyze text quality
     const qualityAnalysis = analyzeTextQuality(extractedText);
-    console.log(`📊 Text quality: ${qualityAnalysis.quality} - ${qualityAnalysis.reason}`);
+    console.log(`Text quality: ${qualityAnalysis.quality} - ${qualityAnalysis.reason}`);
 
     // Insert document into database
-    console.log("💾 Saving document to database...");
+    console.log("Saving document to database...");
     const { data: document, error: docError } = await supabase
       .from("documents")
       .insert([
@@ -400,7 +488,7 @@ serve(async (req) => {
       throw new Error(`Database insertion failed: ${docError.message}`);
     }
 
-    console.log(`✅ Document saved with ID: ${document.id}`);
+    console.log(`Document saved with ID: ${document.id}`);
 
     // Determine if we should process with AI
     const shouldProcessWithAI = qualityAnalysis.shouldProcess && 
@@ -408,12 +496,12 @@ serve(async (req) => {
                                extractedText.length > 50 &&
                                !extractedText.startsWith("[");
 
-    console.log(`🤖 Should process with AI: ${shouldProcessWithAI}`);
-    console.log(`📏 Text length: ${extractedText.length}`);
-    console.log(`🎯 Extraction status: ${extractionStatus}`);
+    console.log(`Should process with AI: ${shouldProcessWithAI}`);
+    console.log(`Text length: ${extractedText.length}`);
+    console.log(`Extraction status: ${extractionStatus}`);
 
     if (shouldProcessWithAI) {
-      console.log("🚀 Triggering AI processing...");
+      console.log("Triggering AI processing...");
       
       // Enhanced AI processing with retry logic
       const processWithAI = async (retryCount = 0) => {
@@ -441,15 +529,15 @@ serve(async (req) => {
           );
 
           if (processError) {
-            console.error(`❌ AI processing error (attempt ${retryCount + 1}):`, processError);
+            console.error(`AI processing error (attempt ${retryCount + 1}):`, processError);
             
             if (retryCount < maxRetries) {
-              console.log(`🔄 Retrying AI processing... (${retryCount + 1}/${maxRetries})`);
+              console.log(`Retrying AI processing... (${retryCount + 1}/${maxRetries})`);
               await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 2000));
               return await processWithAI(retryCount + 1);
             } else {
               // Final retry failed - update document status
-              console.error("❌ All AI processing attempts failed");
+              console.error("All AI processing attempts failed");
               await supabase
                 .from("documents")
                 .update({
@@ -461,11 +549,11 @@ serve(async (req) => {
               return { success: false, error: processError };
             }
           } else {
-            console.log("✅ AI processing completed successfully");
+            console.log("AI processing completed successfully");
             return { success: true, result: processResult };
           }
         } catch (error) {
-          console.error(`❌ AI processing exception (attempt ${retryCount + 1}):`, error);
+          console.error(`AI processing exception (attempt ${retryCount + 1}):`, error);
           
           if (retryCount < maxRetries) {
             await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 2000));
@@ -488,11 +576,11 @@ serve(async (req) => {
       const aiResult = await processWithAI();
       
       if (!aiResult.success) {
-        console.warn("⚠️ AI processing failed, but document was saved successfully");
+        console.warn("AI processing failed, but document was saved successfully");
       }
 
     } else {
-      console.log("⏭️ Skipping AI processing - insufficient or invalid text");
+      console.log("Skipping AI processing - insufficient or invalid text");
       await supabase
         .from("documents")
         .update({
@@ -504,8 +592,8 @@ serve(async (req) => {
 
     // Prepare response
     const responseMessage = shouldProcessWithAI
-      ? `✅ Document uploaded successfully! Text extracted using ${extractionMethod} (${extractionConfidence} confidence). AI processing started.`
-      : `📄 Document uploaded but AI processing skipped. ${qualityAnalysis.reason}. Status: ${extractionStatus}.`;
+      ? `Document uploaded successfully! Text extracted using ${extractionMethod} (${extractionConfidence} confidence). AI processing started.`
+      : `Document uploaded but AI processing skipped. ${qualityAnalysis.reason}. Status: ${extractionStatus}.`;
 
     return new Response(
       JSON.stringify({
@@ -539,7 +627,7 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error("💥 Upload processing failed:", error);
+    console.error("Upload processing failed:", error);
     
     return new Response(
       JSON.stringify({

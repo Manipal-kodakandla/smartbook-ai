@@ -114,6 +114,129 @@ function validateTopic(topic, index, documentId) {
     topic_order: index
   };
 }
+// Generate quiz for a specific topic using Gemini API
+async function generateQuizForTopic(topic, maxRetries = 3) {
+  if (!GEMINI_API_KEY) {
+    console.error("❌ GEMINI_API_KEY not found for quiz generation");
+    return null;
+  }
+  const prompt = `Create a multiple-choice quiz question based on this educational topic. Return ONLY a valid JSON object with no additional text.
+
+Topic Information:
+Title: ${topic.title}
+Content: ${topic.content}
+Explanation: ${topic.simplified_explanation}
+Example: ${topic.real_world_example}
+Keywords: ${topic.keywords.join(', ')}
+
+Create a quiz with this exact JSON structure:
+{
+  "question": "Clear, specific question about the topic (max 200 characters)",
+  "options": [
+    "Option A - correct answer",
+    "Option B - plausible but incorrect",
+    "Option C - plausible but incorrect", 
+    "Option D - plausible but incorrect"
+  ],
+  "correct_answer": 0,
+  "explanation": "Brief explanation of why the correct answer is right (max 300 characters)"
+}
+
+Requirements:
+- Question should test understanding of the key concept
+- All 4 options should be plausible but only one correct
+- correct_answer should be the index (0-3) of the correct option
+- Make it educational and appropriately challenging
+- Return only the JSON object, no markdown or extra text`;
+  for(let attempt = 1; attempt <= maxRetries; attempt++){
+    try {
+      console.log(`🧩 Generating quiz for "${topic.title}" (attempt ${attempt}/${maxRetries})...`);
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: prompt
+                }
+              ]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.3,
+            topK: 40,
+            topP: 0.8,
+            maxOutputTokens: 1000
+          }
+        })
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`❌ Quiz generation API error (${response.status}):`, errorText.slice(0, 200));
+        if (attempt < maxRetries) {
+          await new Promise((resolve)=>setTimeout(resolve, attempt * 1000));
+          continue;
+        }
+        return null;
+      }
+      const data = await response.json();
+      const rawContent = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      if (!rawContent) {
+        console.error("❌ Empty quiz response from Gemini");
+        continue;
+      }
+      // Parse the quiz JSON
+      const quizData = extractJsonFromResponse(rawContent);
+      if (quizData.length > 0) {
+        const quiz = quizData[0];
+        // Validate quiz structure
+        if (quiz.question && Array.isArray(quiz.options) && quiz.options.length === 4 && typeof quiz.correct_answer === 'number' && quiz.correct_answer >= 0 && quiz.correct_answer <= 3) {
+          console.log(`✅ Successfully generated quiz for "${topic.title}"`);
+          return {
+            question: quiz.question.slice(0, 200),
+            options: quiz.options.map((opt)=>String(opt).slice(0, 150)),
+            correct_answer: quiz.correct_answer,
+            explanation: (quiz.explanation || "").slice(0, 300)
+          };
+        } else {
+          console.warn(`⚠️ Invalid quiz structure for "${topic.title}" on attempt ${attempt}`);
+        }
+      } else {
+        console.warn(`⚠️ No valid quiz JSON extracted for "${topic.title}" on attempt ${attempt}`);
+      }
+    } catch (error) {
+      console.error(`❌ Quiz generation attempt ${attempt} failed for "${topic.title}":`, error.message);
+    }
+    if (attempt < maxRetries) {
+      await new Promise((resolve)=>setTimeout(resolve, attempt * 1000));
+    }
+  }
+  console.warn(`⚠️ All quiz generation attempts failed for "${topic.title}"`);
+  return null;
+}
+// Create fallback quiz for a topic
+function createFallbackQuiz(topic) {
+  console.log(`🛡️ Creating fallback quiz for "${topic.title}"`);
+  const keywords = topic.keywords || [
+    'concept'
+  ];
+  const mainKeyword = keywords[0] || 'topic';
+  return {
+    question: `What is the main focus of the topic "${topic.title}"?`,
+    options: [
+      topic.simplified_explanation.slice(0, 100) || `Understanding ${mainKeyword}`,
+      `Learning about ${keywords[1] || 'general concepts'}`,
+      `Studying ${keywords[2] || 'related topics'}`,
+      `Exploring ${keywords[3] || 'different approaches'}`
+    ],
+    correct_answer: 0,
+    explanation: `The correct answer focuses on the main concept: ${topic.simplified_explanation.slice(0, 150) || topic.title}`
+  };
+}
 // Generate topics using Gemini API with improved prompt
 async function generateTopicsWithGemini(text, documentId, maxRetries = 3) {
   if (!GEMINI_API_KEY) {
@@ -146,7 +269,7 @@ Return JSON array:`;
   for(let attempt = 1; attempt <= maxRetries; attempt++){
     try {
       console.log(`🤖 Gemini attempt ${attempt}/${maxRetries}...`);
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -310,9 +433,31 @@ serve(async (req)=>{
       console.log("⚠️ Very minimal content, creating basic fallback topics");
       const fallbackTopics = createFallbackTopics(cleanedText, documentId);
       // Insert fallback topics
-      const { error: insertError } = await supabase.from("topics").insert(fallbackTopics);
+      const { data: insertedTopics, error: insertError } = await supabase.from("topics").insert(fallbackTopics).select();
       if (insertError) {
         throw new Error(`Failed to insert fallback topics: ${insertError.message}`);
+      }
+      // Generate quizzes for fallback topics
+      console.log("🧩 Generating quizzes for fallback topics...");
+      const quizzes = [];
+      for (const topic of insertedTopics || []){
+        const fallbackQuiz = createFallbackQuiz(topic);
+        quizzes.push({
+          topic_id: topic.id,
+          question: fallbackQuiz.question,
+          options: fallbackQuiz.options,
+          correct_answer: fallbackQuiz.correct_answer,
+          explanation: fallbackQuiz.explanation
+        });
+      }
+      // Insert quizzes
+      if (quizzes.length > 0) {
+        const { error: quizError } = await supabase.from("quizzes").insert(quizzes);
+        if (quizError) {
+          console.error("❌ Failed to insert fallback quizzes:", quizError.message);
+        } else {
+          console.log(`✅ Inserted ${quizzes.length} fallback quizzes`);
+        }
       }
       // Update document status
       await supabase.from("documents").update({
@@ -321,8 +466,9 @@ serve(async (req)=>{
       }).eq("id", documentId);
       return new Response(JSON.stringify({
         success: true,
-        topics: fallbackTopics,
-        message: `Document processed with ${fallbackTopics.length} topics (minimal content detected)`,
+        topics: insertedTopics,
+        quizzes: quizzes.length,
+        message: `Document processed with ${fallbackTopics.length} topics and ${quizzes.length} quizzes (minimal content detected)`,
         source: "minimal_fallback"
       }), {
         headers: {
@@ -362,20 +508,67 @@ serve(async (req)=>{
     }
     // Insert topics into database
     console.log(`💾 Inserting ${validTopics.length} topics into database...`);
-    const { error: insertError } = await supabase.from("topics").insert(validTopics);
+    const { data: insertedTopics, error: insertError } = await supabase.from("topics").insert(validTopics).select();
     if (insertError) {
       throw new Error(`Database insertion failed: ${insertError.message}`);
+    }
+    // Generate quizzes for each topic
+    console.log(`🧩 Generating quizzes for ${insertedTopics?.length || 0} topics...`);
+    const quizzes = [];
+    let successfulQuizzes = 0;
+    for (const topic of insertedTopics || []){
+      try {
+        // Try to generate AI quiz first
+        let quizData = await generateQuizForTopic(topic);
+        // If AI quiz generation fails, create fallback quiz
+        if (!quizData) {
+          quizData = createFallbackQuiz(topic);
+        }
+        quizzes.push({
+          topic_id: topic.id,
+          question: quizData.question,
+          options: quizData.options,
+          correct_answer: quizData.correct_answer,
+          explanation: quizData.explanation
+        });
+        successfulQuizzes++;
+      } catch (error) {
+        console.error(`❌ Failed to generate quiz for topic "${topic.title}":`, error.message);
+        // Create basic fallback quiz even if there's an error
+        const fallbackQuiz = createFallbackQuiz(topic);
+        quizzes.push({
+          topic_id: topic.id,
+          question: fallbackQuiz.question,
+          options: fallbackQuiz.options,
+          correct_answer: fallbackQuiz.correct_answer,
+          explanation: fallbackQuiz.explanation
+        });
+      }
+    }
+    // Insert quizzes into database
+    if (quizzes.length > 0) {
+      console.log(`💾 Inserting ${quizzes.length} quizzes into database...`);
+      const { error: quizError } = await supabase.from("quizzes").insert(quizzes);
+      if (quizError) {
+        console.error("❌ Failed to insert quizzes:", quizError.message);
+      // Don't fail the entire process if quiz insertion fails
+      } else {
+        console.log(`✅ Successfully inserted ${quizzes.length} quizzes (${successfulQuizzes} AI-generated, ${quizzes.length - successfulQuizzes} fallback)`);
+      }
     }
     // Update document status to completed
     await supabase.from("documents").update({
       processing_status: "completed",
       processed_at: new Date().toISOString()
     }).eq("id", documentId);
-    console.log(`✅ Successfully processed document ${documentId} with ${validTopics.length} topics`);
+    console.log(`✅ Successfully processed document ${documentId} with ${validTopics.length} topics and ${quizzes.length} quizzes`);
     return new Response(JSON.stringify({
       success: true,
-      topics: validTopics,
-      message: `Document processed successfully with ${validTopics.length} topics`,
+      topics: insertedTopics,
+      quizzes: quizzes.length,
+      ai_generated_quizzes: successfulQuizzes,
+      fallback_quizzes: quizzes.length - successfulQuizzes,
+      message: `Document processed successfully with ${validTopics.length} topics and ${quizzes.length} quizzes`,
       source: rawTopics.length > 0 ? "gemini_ai_with_fallback" : "fallback_only"
     }), {
       headers: {

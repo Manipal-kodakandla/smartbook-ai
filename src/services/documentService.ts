@@ -113,7 +113,7 @@ export const documentService = {
     }
 
     console.log('✅ Retrieved topics:', data);
-    return data || [];
+    return (data || []).map(t => ({ ...t, keywords: (t.keywords as string[] || []) }));
   },
 
   async getTopicQuizzes(topicId: string): Promise<Quiz[]> {

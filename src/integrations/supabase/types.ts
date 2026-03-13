@@ -14,7 +14,168 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      documents: {
+        Row: {
+          created_at: string | null
+          extracted_text: string | null
+          extraction_confidence: string | null
+          extraction_status: string | null
+          file_name: string | null
+          file_size: number | null
+          file_type: string | null
+          id: string
+          processed_at: string | null
+          processing_status: string | null
+          title: string | null
+          uploaded_at: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          extracted_text?: string | null
+          extraction_confidence?: string | null
+          extraction_status?: string | null
+          file_name?: string | null
+          file_size?: number | null
+          file_type?: string | null
+          id?: string
+          processed_at?: string | null
+          processing_status?: string | null
+          title?: string | null
+          uploaded_at?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string | null
+          extracted_text?: string | null
+          extraction_confidence?: string | null
+          extraction_status?: string | null
+          file_name?: string | null
+          file_size?: number | null
+          file_type?: string | null
+          id?: string
+          processed_at?: string | null
+          processing_status?: string | null
+          title?: string | null
+          uploaded_at?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      quizzes: {
+        Row: {
+          correct_answer: number | null
+          explanation: string | null
+          id: string
+          options: Json | null
+          question: string | null
+          topic_id: string | null
+        }
+        Insert: {
+          correct_answer?: number | null
+          explanation?: string | null
+          id?: string
+          options?: Json | null
+          question?: string | null
+          topic_id?: string | null
+        }
+        Update: {
+          correct_answer?: number | null
+          explanation?: string | null
+          id?: string
+          options?: Json | null
+          question?: string | null
+          topic_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "quizzes_topic_id_fkey"
+            columns: ["topic_id"]
+            isOneToOne: false
+            referencedRelation: "topics"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      topics: {
+        Row: {
+          content: string | null
+          document_id: string | null
+          id: string
+          keywords: Json | null
+          real_world_example: string | null
+          simplified_explanation: string | null
+          title: string | null
+          topic_order: number | null
+        }
+        Insert: {
+          content?: string | null
+          document_id?: string | null
+          id?: string
+          keywords?: Json | null
+          real_world_example?: string | null
+          simplified_explanation?: string | null
+          title?: string | null
+          topic_order?: number | null
+        }
+        Update: {
+          content?: string | null
+          document_id?: string | null
+          id?: string
+          keywords?: Json | null
+          real_world_example?: string | null
+          simplified_explanation?: string | null
+          title?: string | null
+          topic_order?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "topics_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      user_progress: {
+        Row: {
+          completed: boolean | null
+          id: string
+          last_accessed: string | null
+          quiz_attempts: number | null
+          quiz_score: number | null
+          topic_id: string | null
+          user_id: string
+        }
+        Insert: {
+          completed?: boolean | null
+          id?: string
+          last_accessed?: string | null
+          quiz_attempts?: number | null
+          quiz_score?: number | null
+          topic_id?: string | null
+          user_id: string
+        }
+        Update: {
+          completed?: boolean | null
+          id?: string
+          last_accessed?: string | null
+          quiz_attempts?: number | null
+          quiz_score?: number | null
+          topic_id?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "user_progress_topic_id_fkey"
+            columns: ["topic_id"]
+            isOneToOne: false
+            referencedRelation: "topics"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
